@@ -1,0 +1,16 @@
+# Large / un-rebuildable binaries are intentionally NOT committed.
+# Their md5s + provenance are in REPRODUCE.md §11 and ARTIFACT-INVENTORY.txt.
+liboh_android_runtime.so
+liboh_adapter_bridge.so
+libhwui.so
+*.apk
+*.jar
+boot*.art
+boot*.oat
+boot*.vdex
+*.oat
+*.art
+*.vdex
+# allow the two small committed blobs explicitly
+!ca-store/cacerts.tgz
+!scripts/SmaliAssemble.java

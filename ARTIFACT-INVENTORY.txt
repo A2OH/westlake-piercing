@@ -1,0 +1,4 @@
+=== artifact inventory (md5s) ===
+384134d8b0f48b8c486e329787ddcdd8  /tmp/noice-coro-signed.apk
+7c3e5ecec7d1ceff6e1ce66092161467  /tmp/libv4force.so
+888d018ddebbd183d65745faa0972c1c  /tmp/cacerts.tgz
