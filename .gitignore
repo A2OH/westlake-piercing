@@ -11,6 +11,9 @@ boot*.vdex
 *.oat
 *.art
 *.vdex
-# allow the two small committed blobs explicitly
+# allow the small committed blobs explicitly
 !ca-store/cacerts.tgz
 !scripts/SmaliAssemble.java
+!native-libs/libv4force.so
+!native-tls/libtlsjni.so
+!native-tls/tlsjni-extra.dex
