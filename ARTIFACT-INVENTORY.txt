@@ -1,4 +1,65 @@
 === artifact inventory (md5s) ===
-384134d8b0f48b8c486e329787ddcdd8  /tmp/noice-coro-signed.apk
-7c3e5ecec7d1ceff6e1ce66092161467  /tmp/libv4force.so
-888d018ddebbd183d65745faa0972c1c  /tmp/cacerts.tgz
+
+Convention: small patches / configs / sources are COMMITTED in this repo; large or
+un-rebuildable binaries are NOT committed — their md5 + provenance are recorded
+here so they can be reproduced or byte-matched. (See REPRODUCE.md /
+CATALOG-REPRODUCE.md for how each is built/deployed.)
+
+--- committed small data blobs (in this repo) ---
+384134d8b0f48b8c486e329787ddcdd8  noice base.apk (coro-signed)            [noice; NOT committed-binary, rebuild from noice-smali-patches/ — see note below]
+7c3e5ecec7d1ceff6e1ce66092161467  native-libs/libv4force.so               [COMMITTED, 3 KB]
+888d018ddebbd183d65745faa0972c1c  ca-store/cacerts.tgz                    [COMMITTED, 133 KB]
+425290bd5ad6c7952638522d559a76f2  config/hm_symbol_config_next.json       [COMMITTED, 144 B — the minimal catalog cold-boot fontconfig]
+
+================================================================================
+noice (com.github.ashutoshgngwr.noice) — see REPRODUCE.md
+================================================================================
+versionName 2.5.1 / versionCode 66 ; targetSdk 33 ; label "Noice" ; uid 13731
+--- deployed component md5s (binaries NOT committed; recorded for provenance) ---
+16e08711  liboh_android_runtime.so   un-rebuildable BASE blob; record only. /system/android/lib/ (+/system/lib/)
+2967c30c  liboh_adapter_bridge.so    buildable from bridge-src/. /system/lib/ + /system/android/lib/
+8b8f84ec  libhwui.so                 buildable from bridge-src/hwui_oh_abi_patch.cpp. /system/android/lib/
+15396933  framework.jar (patched)    regenerated from framework-smali-patches/ + boot regen. /system/android/framework/
+(—)       boot image (30 segments)   large; regenerate per REPRODUCE.md §4C. /system/android/framework/arm/boot*
+384134d8…  noice base.apk (coro)     rebuild from a noice base APK + noice-smali-patches/. NOT committed.
+
+================================================================================
+Material Components Catalog (io.material.catalog) — see CATALOG-REPRODUCE.md
+================================================================================
+versionName 1.0 / versionCode 1 ; compileSdk/targetSdk 33 (Android 13) ; label "M3 Catalog" ; uid 16371
+Stock catalog clean APK md5 a9df55180010240db8be5facbe1e5a56 (== the deployed base.apk =
+the setDurationScale(1.0f) cosmetic patch only; rebuild stock per BUILD-FROM-SOURCE.md §1).
+
+--- deployed component md5s (binaries NOT committed; recorded for provenance) ---
+ba40f173  libart.so                    W-series vtable/proxy fixes + perf-logging trim. Build: $HOME/libart-pathA-work (build_libart_pathA.sh); diffs in libart-patches/. OAT 230. Deploy /system/android/lib/libart.so ONLY.
+e6f9e1a3  framework.jar (patched)       ConnectivityManager + ContentResolver null-guards. Regen from framework-smali-patches/ + boot regen. /system/android/framework/framework.jar
+c026e80c  adapter-runtime-bcp.jar (arb) metaData PackageInfoBuilder empty-Bundle fix (+ L1 TransitionOptionsHolder lineage). BCP → boot regen. /system/android/framework/adapter-runtime-bcp.jar
+4690cae1  oh-adapter-framework.jar(ohaf) IME OhImeBridge + InputMethodManagerAdapter forwarding. BCP → boot regen. /system/android/framework/oh-adapter-framework.jar
+9b2a9727  liboh_adapter_bridge.so       IME-summon loader (input_method_bridge.cpp) + input/window/surface. Build bridge-src/. /system/lib/ + /system/android/lib/
+e4880759  liboh_ime_helper.so           InputMethodController calls; dlopen'd lazily (oh_ime_helper.cpp). /system/lib/ + /system/android/lib/
+4d2c6399  libappexecfwk_common.z.so     .app->.apk byte-patch @ file offset 0x1a40 (0x70->0x6b). /system/lib/platformsdk/ + /system/android/lib/
+3abe3bde  appspawn-x (10-jar)           Zygote-equivalent; 10-jar Scope-C kBootClasspath. Build $HOME/bridge-build (build_appspawn_x.sh). /system/bin/appspawn-x
+290e4499  boot-framework.oat            one of 30 boot segments (live demo-ready set). Regenerate per CATALOG-REPRODUCE.md §boot-regen. /system/android/framework/arm/
+425290bd  hm_symbol_config_next.json    minimal cold-boot fontconfig (144 B) — COMMITTED at config/. orig 6.3 MB = 6ed9f4d6 (NOT committed; record only). /system/fonts/
+
+--- committed catalog patch sources/inputs (small; in this repo) ---
+catalog-smali-patches/ContainerTransformConfigurationHelper.smali  the ONE catalog APK cosmetic patch (setDurationScale(1.0f) in configure(); class in classes3.dex)
+framework-smali-patches/android_content_ContentResolver.smali      ContentResolver register/unregister null-guard (SHARED by noice + catalog; see :smfix_reg_ret)
+framework-smali-patches/catalog/OhImeBridge.smali (+ $1)            ohaf IME bridge class (4690cae1)
+framework-smali-patches/catalog/TransitionOptionsHolder.{java,smali} shared-element ActivityOptions carry (arb; L1 morph plumbing)
+libart-patches/class_linker.cc.westlake-W-series.diff               cumulative ART W-series + W9 gate(100000) + W22-PROXY-SKIP + W15 NPE-redirect
+libart-patches/class_linker.cc.perf-logging-trim.diff              the perf logging trim (kLogVtableFixup=false + [*_CP] gating)
+bridge-src/input_method_bridge.cpp                                 IME-summon JNI loader half (in liboh_adapter_bridge.so)
+bridge-src/oh_ime_helper.cpp                                       InputMethodController half (in liboh_ime_helper.so)
+entry-hap/                                                          launcher-icon entry.hap build inputs (module.json, string.json, app_icon.png, id_defined.json)
+config/hm_symbol_config_next.json                                  minimal cold-boot fontconfig (425290bd)
+notes/selinux-permissive.md                                        autonomous-demo SELinux enforcing->permissive
+notes/device-safety.md                                             brick/device-loss footguns (usb.config, critical service, mock battery)
+
+NOTE on md5 reconciliation: the SAME BCP jar shows competing md5s across sessions
+per feature (e.g. ohaf 300581d1->4690cae1; framework.jar f5fd86ef->e6f9e1a3; arb
+d5d39a05->6e32a253->c026e80c; libart 2813065e->ba40f173; boot-framework.oat
+54001902->290e4499). The values above are the LIVE demo-ready set (verified on
+device 2026-06-25). A from-scratch build must apply ALL the smali/source patches
+to each component and do ONE final boot regen — do not deploy per-session md5s in
+isolation; regenerate the boot image to match whatever jar set you assemble.

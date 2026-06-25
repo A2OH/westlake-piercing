@@ -1,0 +1,14 @@
+{
+    "record": [
+        {
+            "id": "0x01000005",
+            "name": "app_icon",
+            "type": "media"
+        },
+        {
+            "id": "0x01000003",
+            "name": "app_name",
+            "type": "string"
+        }
+    ]
+}

@@ -1,0 +1,322 @@
+--- $HOME/libart-pathA-work/src/class_linker.cc.bak-preperf	2026-06-25 13:24:14.585111696 +0800
++++ $HOME/libart-pathA-work/src/class_linker.cc	2026-06-25 13:24:14.593111703 +0800
+@@ -1262,7 +1262,7 @@
+ 
+ bool ClassLinker::InitFromBootImage(std::string* error_msg) {
+   VLOG(startup) << __FUNCTION__ << " entering";
+-  fprintf(stderr, "[CLI_CP] A_entry\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[CLI_CP] A_entry\n"); fflush(stderr);
+   CHECK(!init_done_);
+ 
+   Runtime* const runtime = Runtime::Current();
+@@ -1315,7 +1315,7 @@
+   std::vector<const OatFile*> oat_files =
+       runtime->GetOatFileManager().RegisterImageOatFiles(spaces);
+   DCHECK(!oat_files.empty());
+-  fprintf(stderr, "[CLI_CP] B_after_register_oat_files count=%zu\n", oat_files.size()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[CLI_CP] B_after_register_oat_files count=%zu\n", oat_files.size()); fflush(stderr);
+   const OatHeader& default_oat_header = oat_files[0]->GetOatHeader();
+   jni_dlsym_lookup_trampoline_ = default_oat_header.GetJniDlsymLookupTrampoline();
+   jni_dlsym_lookup_critical_trampoline_ = default_oat_header.GetJniDlsymLookupCriticalTrampoline();
+@@ -1324,7 +1324,7 @@
+   quick_generic_jni_trampoline_ = default_oat_header.GetQuickGenericJniTrampoline();
+   quick_to_interpreter_bridge_trampoline_ = default_oat_header.GetQuickToInterpreterBridge();
+   nterp_trampoline_ = default_oat_header.GetNterpTrampoline();
+-  fprintf(stderr, "[CLI_CP] C_after_read_trampolines nterp=%p qtib=%p\n", nterp_trampoline_, quick_to_interpreter_bridge_trampoline_); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[CLI_CP] C_after_read_trampolines nterp=%p qtib=%p\n", nterp_trampoline_, quick_to_interpreter_bridge_trampoline_); fflush(stderr);
+   if (kIsDebugBuild) {
+     // Check that the other images use the same trampoline.
+     for (size_t i = 1; i < oat_files.size(); ++i) {
+@@ -1402,7 +1402,7 @@
+   DCHECK(runtime->GetSentinel().Read()->GetClass() == GetClassRoot<mirror::Object>(this));
+ 
+   // Boot class loader, use a null handle.
+-  fprintf(stderr, "[CLI_CP] D_before_AddImageSpaces\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[CLI_CP] D_before_AddImageSpaces\n"); fflush(stderr);
+   if (!AddImageSpaces(ArrayRef<gc::space::ImageSpace*>(spaces),
+                       ScopedNullHandle<mirror::ClassLoader>(),
+                       /*context=*/nullptr,
+@@ -1410,14 +1410,14 @@
+                       error_msg)) {
+     return false;
+   }
+-  fprintf(stderr, "[CLI_CP] E_before_InitializeObjectVirtualMethodHashes\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[CLI_CP] E_before_InitializeObjectVirtualMethodHashes\n"); fflush(stderr);
+   InitializeObjectVirtualMethodHashes(GetClassRoot<mirror::Object>(this),
+                                       image_pointer_size_,
+                                       ArrayRef<uint32_t>(object_virtual_method_hashes_));
+-  fprintf(stderr, "[CLI_CP] F_before_FinishInit\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[CLI_CP] F_before_FinishInit\n"); fflush(stderr);
+   FinishInit(self);
+ 
+-  fprintf(stderr, "[CLI_CP] Z_exiting\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[CLI_CP] Z_exiting\n"); fflush(stderr);
+   VLOG(startup) << __FUNCTION__ << " exiting";
+   return true;
+ }
+@@ -1862,24 +1862,24 @@
+     Handle<mirror::ClassLoader> class_loader,
+     std::vector<std::unique_ptr<const DexFile>>* out_dex_files,
+     std::string* error_msg) {
+-  fprintf(stderr, "[OAIDF_CP] A_entry space=%p\n", space); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] A_entry space=%p\n", space); fflush(stderr);
+   DCHECK(out_dex_files != nullptr);
+   const bool app_image = class_loader != nullptr;
+   const ImageHeader& header = space->GetImageHeader();
+-  fprintf(stderr, "[OAIDF_CP] B_got_header\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] B_got_header\n"); fflush(stderr);
+   ObjPtr<mirror::Object> dex_caches_object = header.GetImageRoot(ImageHeader::kDexCaches);
+-  fprintf(stderr, "[OAIDF_CP] C_got_dex_caches_root obj=%p\n", dex_caches_object.Ptr()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] C_got_dex_caches_root obj=%p\n", dex_caches_object.Ptr()); fflush(stderr);
+   DCHECK(dex_caches_object != nullptr);
+   Thread* const self = Thread::Current();
+   StackHandleScope<3> hs(self);
+   Handle<mirror::ObjectArray<mirror::DexCache>> dex_caches(
+       hs.NewHandle(dex_caches_object->AsObjectArray<mirror::DexCache>()));
+-  fprintf(stderr, "[OAIDF_CP] D_got_dex_caches_handle\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] D_got_dex_caches_handle\n"); fflush(stderr);
+   const OatFile* oat_file = space->GetOatFile();
+-  fprintf(stderr, "[OAIDF_CP] E_got_oat_file=%p\n", oat_file); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] E_got_oat_file=%p\n", oat_file); fflush(stderr);
+   uint32_t oat_dex_count = oat_file->GetOatHeader().GetDexFileCount();
+   int32_t dc_len = dex_caches->GetLength();
+-  fprintf(stderr, "[OAIDF_CP] F_counts oat=%u dex_caches=%d\n", oat_dex_count, dc_len); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] F_counts oat=%u dex_caches=%d\n", oat_dex_count, dc_len); fflush(stderr);
+   if (oat_dex_count != static_cast<uint32_t>(dc_len)) {
+     *error_msg =
+         "Dex cache count and dex file count mismatch while trying to initialize from image";
+@@ -1888,12 +1888,12 @@
+ 
+   size_t dc_idx = 0;
+   for (auto dex_cache : dex_caches.Iterate<mirror::DexCache>()) {
+-    fprintf(stderr, "[OAIDF_CP] G_iter_enter idx=%zu\n", dc_idx); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] G_iter_enter idx=%zu\n", dc_idx); fflush(stderr);
+     std::string dex_file_location = dex_cache->GetLocation()->ToModifiedUtf8();
+-    fprintf(stderr, "[OAIDF_CP] H_got_location idx=%zu loc=%s\n", dc_idx, dex_file_location.c_str()); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] H_got_location idx=%zu loc=%s\n", dc_idx, dex_file_location.c_str()); fflush(stderr);
+     std::unique_ptr<const DexFile> dex_file =
+         OpenOatDexFile(oat_file, dex_file_location.c_str(), error_msg);
+-    fprintf(stderr, "[OAIDF_CP] I_open_oat_dex idx=%zu dex=%p\n", dc_idx, dex_file.get()); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] I_open_oat_dex idx=%zu dex=%p\n", dc_idx, dex_file.get()); fflush(stderr);
+     if (dex_file == nullptr) {
+       return false;
+     }
+@@ -1903,16 +1903,16 @@
+       WriterMutexLock mu(self, *Locks::dex_lock_);
+       dex_cache->Initialize(dex_file.get(), class_loader.Get());
+     }
+-    fprintf(stderr, "[OAIDF_CP] J_after_initialize idx=%zu\n", dc_idx); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] J_after_initialize idx=%zu\n", dc_idx); fflush(stderr);
+     if (!app_image) {
+       // Register dex files, keep track of existing ones that are conflicts.
+       AppendToBootClassPath(dex_file.get(), dex_cache);
+     }
+-    fprintf(stderr, "[OAIDF_CP] K_after_append idx=%zu\n", dc_idx); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] K_after_append idx=%zu\n", dc_idx); fflush(stderr);
+     out_dex_files->push_back(std::move(dex_file));
+     ++dc_idx;
+   }
+-  fprintf(stderr, "[OAIDF_CP] Z_done count=%zu\n", dc_idx); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[OAIDF_CP] Z_done count=%zu\n", dc_idx); fflush(stderr);
+   return true;
+ }
+ 
+@@ -2359,35 +2359,35 @@
+                                  ClassLoaderContext* context,
+                                  /*out*/ std::vector<std::unique_ptr<const DexFile>>* dex_files,
+                                  /*out*/ std::string* error_msg) {
+-  fprintf(stderr, "[AIS_CP] A_entry spaces=%zu\n", spaces.size()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] A_entry spaces=%zu\n", spaces.size()); fflush(stderr);
+   std::vector<std::vector<std::unique_ptr<const DexFile>>> dex_files_by_space_index;
+   size_t idx = 0;
+   for (const gc::space::ImageSpace* space : spaces) {
+-    fprintf(stderr, "[AIS_CP] B_OpenAndInit idx=%zu\n", idx); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] B_OpenAndInit idx=%zu\n", idx); fflush(stderr);
+     std::vector<std::unique_ptr<const DexFile>> space_dex_files;
+     if (!OpenAndInitImageDexFiles(space, class_loader, /*out*/ &space_dex_files, error_msg)) {
+-      fprintf(stderr, "[AIS_CP] B_FAIL idx=%zu err=%s\n", idx, error_msg->c_str()); fflush(stderr);
++      // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] B_FAIL idx=%zu err=%s\n", idx, error_msg->c_str()); fflush(stderr);
+       return false;
+     }
+-    fprintf(stderr, "[AIS_CP] B_OK idx=%zu dex_files=%zu\n", idx, space_dex_files.size()); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] B_OK idx=%zu dex_files=%zu\n", idx, space_dex_files.size()); fflush(stderr);
+     dex_files_by_space_index.push_back(std::move(space_dex_files));
+     ++idx;
+   }
+-  fprintf(stderr, "[AIS_CP] C_all_OpenAndInit_done\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] C_all_OpenAndInit_done\n"); fflush(stderr);
+   // This must be done in a separate loop after all dex files are initialized because there can be
+   // references from an image space to another image space that comes after it.
+   for (size_t i = 0u, size = spaces.size(); i != size; ++i) {
+-    fprintf(stderr, "[AIS_CP] D_AddImageSpace idx=%zu\n", i); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] D_AddImageSpace idx=%zu\n", i); fflush(stderr);
+     std::vector<std::unique_ptr<const DexFile>>& space_dex_files = dex_files_by_space_index[i];
+     if (!AddImageSpace(spaces[i], class_loader, context, space_dex_files, error_msg)) {
+-      fprintf(stderr, "[AIS_CP] D_FAIL idx=%zu err=%s\n", i, error_msg->c_str()); fflush(stderr);
++      // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] D_FAIL idx=%zu err=%s\n", i, error_msg->c_str()); fflush(stderr);
+       return false;
+     }
+-    fprintf(stderr, "[AIS_CP] D_OK idx=%zu\n", i); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] D_OK idx=%zu\n", i); fflush(stderr);
+     // Append opened dex files at the end.
+     std::move(space_dex_files.begin(), space_dex_files.end(), std::back_inserter(*dex_files));
+   }
+-  fprintf(stderr, "[AIS_CP] Z_all_done\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[AIS_CP] Z_all_done\n"); fflush(stderr);
+   return true;
+ }
+ 
+@@ -4063,45 +4063,45 @@
+ 
+ void ClassLinker::AppendToBootClassPath(const DexFile* dex_file,
+                                         ObjPtr<mirror::DexCache> dex_cache) {
+-  fprintf(stderr, "[ABCP_CP] A_entry dex=%p cache=%p\n", dex_file, dex_cache.Ptr()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[ABCP_CP] A_entry dex=%p cache=%p\n", dex_file, dex_cache.Ptr()); fflush(stderr);
+   CHECK(dex_file != nullptr);
+   CHECK(dex_cache != nullptr) << dex_file->GetLocation();
+-  fprintf(stderr, "[ABCP_CP] B_pre_check_eq\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[ABCP_CP] B_pre_check_eq\n"); fflush(stderr);
+   CHECK_EQ(dex_cache->GetDexFile(), dex_file) << dex_file->GetLocation();
+-  fprintf(stderr, "[ABCP_CP] C_pre_push\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[ABCP_CP] C_pre_push\n"); fflush(stderr);
+   boot_class_path_.push_back(dex_file);
+-  fprintf(stderr, "[ABCP_CP] D_after_push bcp_size=%zu\n", boot_class_path_.size()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[ABCP_CP] D_after_push bcp_size=%zu\n", boot_class_path_.size()); fflush(stderr);
+   WriterMutexLock mu(Thread::Current(), *Locks::dex_lock_);
+-  fprintf(stderr, "[ABCP_CP] E_lock_acquired\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[ABCP_CP] E_lock_acquired\n"); fflush(stderr);
+   RegisterDexFileLocked(*dex_file, dex_cache, /* class_loader= */ nullptr);
+-  fprintf(stderr, "[ABCP_CP] Z_after_register\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[ABCP_CP] Z_after_register\n"); fflush(stderr);
+ }
+ 
+ void ClassLinker::RegisterDexFileLocked(const DexFile& dex_file,
+                                         ObjPtr<mirror::DexCache> dex_cache,
+                                         ObjPtr<mirror::ClassLoader> class_loader) {
+-  fprintf(stderr, "[RDFL_CP] A_entry\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] A_entry\n"); fflush(stderr);
+   Thread* const self = Thread::Current();
+   Locks::dex_lock_->AssertExclusiveHeld(self);
+   CHECK(dex_cache != nullptr) << dex_file.GetLocation();
+   CHECK_EQ(dex_cache->GetDexFile(), &dex_file) << dex_file.GetLocation();
+-  fprintf(stderr, "[RDFL_CP] B_checks_ok\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] B_checks_ok\n"); fflush(stderr);
+   // For app images, the dex cache location may be a suffix of the dex file location since the
+   // dex file location is an absolute path.
+-  fprintf(stderr, "[RDFL_CP] C_before_GetLocation dex_cache=%p\n", dex_cache.Ptr()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] C_before_GetLocation dex_cache=%p\n", dex_cache.Ptr()); fflush(stderr);
+   ObjPtr<mirror::String> loc_str = dex_cache->GetLocation();
+-  fprintf(stderr, "[RDFL_CP] D_after_GetLocation str=%p\n", loc_str.Ptr()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] D_after_GetLocation str=%p\n", loc_str.Ptr()); fflush(stderr);
+   const std::string dex_cache_location = loc_str->ToModifiedUtf8();
+-  fprintf(stderr, "[RDFL_CP] E_after_ToModifiedUtf8 loc=%s\n", dex_cache_location.c_str()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] E_after_ToModifiedUtf8 loc=%s\n", dex_cache_location.c_str()); fflush(stderr);
+   const size_t dex_cache_length = dex_cache_location.length();
+   CHECK_GT(dex_cache_length, 0u) << dex_file.GetLocation();
+-  fprintf(stderr, "[RDFL_CP] F_after_len_check len=%zu\n", dex_cache_length); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] F_after_len_check len=%zu\n", dex_cache_length); fflush(stderr);
+   std::string dex_file_location = dex_file.GetLocation();
+-  fprintf(stderr, "[RDFL_CP] G_after_dex_file_loc loc=%s\n", dex_file_location.c_str()); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] G_after_dex_file_loc loc=%s\n", dex_file_location.c_str()); fflush(stderr);
+   // The following paths checks don't work on preopt when using boot dex files, where the dex
+   // cache location is the one on device, and the dex_file's location is the one on host.
+   Runtime* runtime = Runtime::Current();
+-  fprintf(stderr, "[RDFL_CP] H_after_Runtime_Current\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] H_after_Runtime_Current\n"); fflush(stderr);
+   if (!(runtime->IsAotCompiler() && class_loader == nullptr && !kIsTargetBuild)) {
+     CHECK_GE(dex_file_location.length(), dex_cache_length)
+         << dex_cache_location << " " << dex_file.GetLocation();
+@@ -4112,15 +4112,15 @@
+     // dex file location is /system/priv-app/SettingsProvider/SettingsProvider.apk
+     CHECK_EQ(dex_cache_location, dex_file_suffix);
+   }
+-  fprintf(stderr, "[RDFL_CP] I_after_loc_checks\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] I_after_loc_checks\n"); fflush(stderr);
+ 
+   // Check if we need to initialize OatFile data (.data.bimg.rel.ro and .bss
+   // sections) needed for code execution and register the oat code range.
+   const OatFile* oat_file =
+       (dex_file.GetOatDexFile() != nullptr) ? dex_file.GetOatDexFile()->GetOatFile() : nullptr;
+-  fprintf(stderr, "[RDFL_CP] J_oat_file=%p\n", (void*)oat_file); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] J_oat_file=%p\n", (void*)oat_file); fflush(stderr);
+   bool initialize_oat_file_data = (oat_file != nullptr) && oat_file->IsExecutable();
+-  fprintf(stderr, "[RDFL_CP] K_initialize_oat_file_data=%d\n", (int)initialize_oat_file_data); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] K_initialize_oat_file_data=%d\n", (int)initialize_oat_file_data); fflush(stderr);
+   if (initialize_oat_file_data) {
+     for (const auto& entry : dex_caches_) {
+       if (!self->IsJWeakCleared(entry.second.weak_root) &&
+@@ -4131,57 +4131,57 @@
+       }
+     }
+   }
+-  fprintf(stderr, "[RDFL_CP] L_after_dex_caches_loop initialize=%d\n", (int)initialize_oat_file_data); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] L_after_dex_caches_loop initialize=%d\n", (int)initialize_oat_file_data); fflush(stderr);
+   if (initialize_oat_file_data) {
+-    fprintf(stderr, "[RDFL_CP] M_before_InitializeRelocations\n"); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] M_before_InitializeRelocations\n"); fflush(stderr);
+     oat_file->InitializeRelocations();
+-    fprintf(stderr, "[RDFL_CP] N_after_InitializeRelocations\n"); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] N_after_InitializeRelocations\n"); fflush(stderr);
+     // Notify the fault handler about the new executable code range if needed.
+     size_t exec_offset = oat_file->GetOatHeader().GetExecutableOffset();
+     DCHECK_LE(exec_offset, oat_file->Size());
+     size_t exec_size = oat_file->Size() - exec_offset;
+-    fprintf(stderr, "[RDFL_CP] O_exec_offset=%zu size=%zu\n", exec_offset, exec_size); fflush(stderr);
++    // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] O_exec_offset=%zu size=%zu\n", exec_offset, exec_size); fflush(stderr);
+     if (exec_size != 0u) {
+       runtime->AddGeneratedCodeRange(oat_file->Begin() + exec_offset, exec_size);
+-      fprintf(stderr, "[RDFL_CP] P_after_AddGeneratedCodeRange\n"); fflush(stderr);
++      // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] P_after_AddGeneratedCodeRange\n"); fflush(stderr);
+     }
+   }
+ 
+   // Let hiddenapi assign a domain to the newly registered dex file.
+-  fprintf(stderr, "[RDFL_CP] Q_before_InitializeDexFileDomain\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] Q_before_InitializeDexFileDomain\n"); fflush(stderr);
+   hiddenapi::InitializeDexFileDomain(dex_file, class_loader);
+-  fprintf(stderr, "[RDFL_CP] R_after_InitializeDexFileDomain\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] R_after_InitializeDexFileDomain\n"); fflush(stderr);
+ 
+-  fprintf(stderr, "[RDFL_CP] S_before_GetJniEnv\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] S_before_GetJniEnv\n"); fflush(stderr);
+   auto* _env = self->GetJniEnv();
+-  fprintf(stderr, "[RDFL_CP] T_after_GetJniEnv env=%p\n", (void*)_env); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] T_after_GetJniEnv env=%p\n", (void*)_env); fflush(stderr);
+   auto* _vm = _env->GetVm();
+-  fprintf(stderr, "[RDFL_CP] U_after_GetVm vm=%p\n", (void*)_vm); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] U_after_GetVm vm=%p\n", (void*)_vm); fflush(stderr);
+   jweak dex_cache_jweak = _vm->AddWeakGlobalRef(self, dex_cache);
+-  fprintf(stderr, "[RDFL_CP] V_after_AddWeakGlobalRef weak=%p\n", (void*)dex_cache_jweak); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] V_after_AddWeakGlobalRef weak=%p\n", (void*)dex_cache_jweak); fflush(stderr);
+   DexCacheData data;
+   data.weak_root = dex_cache_jweak;
+   data.class_table = ClassTableForClassLoader(class_loader);
+-  fprintf(stderr, "[RDFL_CP] W_after_ClassTableForClassLoader table=%p\n", (void*)data.class_table); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] W_after_ClassTableForClassLoader table=%p\n", (void*)data.class_table); fflush(stderr);
+   AddNativeDebugInfoForDex(self, &dex_file);
+-  fprintf(stderr, "[RDFL_CP] X_after_AddNativeDebugInfoForDex\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] X_after_AddNativeDebugInfoForDex\n"); fflush(stderr);
+   DCHECK(data.class_table != nullptr);
+   // Make sure to hold the dex cache live in the class table. This case happens for the boot class
+   // path dex caches without an image.
+   data.class_table->InsertStrongRoot(dex_cache);
+-  fprintf(stderr, "[RDFL_CP] Y_after_InsertStrongRoot\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] Y_after_InsertStrongRoot\n"); fflush(stderr);
+   // Make sure that the dex cache holds the classloader live.
+   dex_cache->SetClassLoader(class_loader);
+-  fprintf(stderr, "[RDFL_CP] AA_after_SetClassLoader\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] AA_after_SetClassLoader\n"); fflush(stderr);
+   if (class_loader != nullptr) {
+     // Since we added a strong root to the class table, do the write barrier as required for
+     // remembered sets and generational GCs.
+     WriteBarrier::ForEveryFieldWrite(class_loader);
+   }
+   bool inserted = dex_caches_.emplace(&dex_file, std::move(data)).second;
+-  fprintf(stderr, "[RDFL_CP] BB_after_emplace inserted=%d\n", (int)inserted); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] BB_after_emplace inserted=%d\n", (int)inserted); fflush(stderr);
+   CHECK(inserted);
+-  fprintf(stderr, "[RDFL_CP] Z_func_exit\n"); fflush(stderr);
++  // [PERF-2026-06-25 gated] fprintf(stderr, "[RDFL_CP] Z_func_exit\n"); fflush(stderr);
+ }
+ 
+ ObjPtr<mirror::DexCache> ClassLinker::DecodeDexCacheLocked(Thread* self, const DexCacheData* data) {
