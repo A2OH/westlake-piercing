@@ -36,7 +36,7 @@ two apps (Phase 4) are independent and can be built in parallel.
 
 ### Phase 2 — Build the adapter → [`docs/REPRODUCTION-GUIDE.md`](docs/REPRODUCTION-GUIDE.md) §4
 Source/patches in this repo; large outputs are listed by md5 + provenance in [`ARTIFACT-INVENTORY.txt`](ARTIFACT-INVENTORY.txt) (rebuild, don't pull):
-- **`libart`** — the W-series vtable fixups (`libart-patches/`: W9 gate → 100000, W22 proxy-LinkMethods skip, the perf-logging trim). Build via `build_libart_pathA.sh`.
+- **`libart`** — the W-series vtable fixups + IMT / fault-handler / nterp patches. **Buildable form in [`libart-build/`](libart-build/)** (patched sources + `build_libart_pathA.sh` + `BASE-MANIFEST.md` pinning AOSP `platform/art @ 814cc93`, 24Q4 / OAT v230); reviewable diffs in `libart-patches/`.
 - **Bridges** — `bridge-src/` (`liboh_adapter_bridge`: input/touch/D-pad dispatch, `createHardwareBitmap`; `liboh_ime_helper`: the IME bridge).
 - **BCP jars** — `framework.jar` + the adapter jars, with the smali patches in `framework-smali-patches/` (catalog: metaData / ConnectivityManager / ContentResolver guards, `OhImeBridge`; noice: ShortcutManager / AlarmManager fetchers).
 - **Boot image** — `dex2oat64` over the 10-jar BOOTCLASSPATH (exact order in the guide).
@@ -70,7 +70,8 @@ Source/patches in this repo; large outputs are listed by md5 + provenance in [`A
 | [`docs/REPRODUCTION-GUIDE.md`](docs/REPRODUCTION-GUIDE.md) | The adapter: full build + deploy + fixes (802 lines) |
 | [`docs/`](docs/) | Root-cause history (per-wall deep dives) |
 | [`ARTIFACT-INVENTORY.txt`](ARTIFACT-INVENTORY.txt) | Every binary by md5 + provenance (so nothing large is committed) |
-| `libart-patches/` · `framework-smali-patches/` · `bridge-src/` | Adapter source/patches |
+| [`libart-build/`](libart-build/) | **Buildable ART** — patched libart sources + build script + base-pin manifest (`platform/art @ 814cc93`, OAT v230) |
+| `libart-patches/` · `framework-smali-patches/` · `bridge-src/` | Adapter source/patches (libart diffs, framework smali, bridge C++) |
 | `catalog-smali-patches/` · `noice-smali-patches/` | The optional cosmetic APK patches |
 | `entry-hap/` | Launcher-icon HAP build inputs |
 | `config/` · `notes/` | Cold-boot fontconfig; SELinux + device-safety footguns |
