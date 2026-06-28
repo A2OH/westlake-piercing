@@ -19,6 +19,11 @@ them. Everything that makes Android apps run on OHOS lives in the **adapter**
 
 > Honest status of exactly what works / what doesn't: **[`STATUS.md`](STATUS.md)**.
 
+> **★ Latest (2026-06-28): a single unified generation now runs BOTH apps at once** (one libart +
+> one framework + one boot image), plus boot-time auto-start of appspawn-x, the noice launcher icon,
+> and a first-run-wizard skip. Start here: **[`UNIFIED-CONFIG-REPRODUCE.md`](UNIFIED-CONFIG-REPRODUCE.md)**
+> (uses `framework-smali-patches/unified-connectivity/`, `config/asx-autostart/`, `entry-hap/noice/`).
+
 ---
 
 ## Reproduce — the ordered master flow
