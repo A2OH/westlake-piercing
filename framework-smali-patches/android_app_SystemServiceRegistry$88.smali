@@ -43,18 +43,12 @@
         }
     .end annotation
 
-    .line 1090
     const-string/jumbo v0, "shortcut"
 
-    :try_start_smf
-    invoke-static {v0}, Landroid/os/ServiceManager;->getServiceOrThrow(Ljava/lang/String;)Landroid/os/IBinder;
+    invoke-static {v0}, Landroid/os/ServiceManager;->getService(Ljava/lang/String;)Landroid/os/IBinder;
 
     move-result-object v0
-    :try_end_smf
-    .catch Landroid/os/ServiceManager$ServiceNotFoundException; {:try_start_smf .. :try_end_smf} :catch_smf
 
-    :after_smf
-    .line 1091
     new-instance v1, Landroid/content/pm/ShortcutManager;
 
     invoke-static {v0}, Landroid/content/pm/IShortcutService$Stub;->asInterface(Landroid/os/IBinder;)Landroid/content/pm/IShortcutService;
@@ -64,13 +58,6 @@
     invoke-direct {v1, p1, v2}, Landroid/content/pm/ShortcutManager;-><init>(Landroid/content/Context;Landroid/content/pm/IShortcutService;)V
 
     return-object v1
-
-    :catch_smf
-    move-exception v2
-
-    const/4 v0, 0x0
-
-    goto :after_smf
 .end method
 
 .method public bridge synthetic createService(Landroid/app/ContextImpl;)Ljava/lang/Object;

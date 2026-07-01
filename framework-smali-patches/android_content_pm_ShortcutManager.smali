@@ -521,7 +521,7 @@
 .end method
 
 .method public getDynamicShortcuts()Ljava/util/List;
-    .registers 5
+    .registers 1
     .annotation system Ldalvik/annotation/Signature;
         value = {
             "()",
@@ -530,61 +530,12 @@
             ">;"
         }
     .end annotation
-    iget-object v0, p0, Landroid/content/pm/ShortcutManager;->mService:Landroid/content/pm/IShortcutService;
 
-    if-nez v0, :smfix_have
+    new-instance p0, Ljava/util/ArrayList;
 
-    new-instance v0, Ljava/util/ArrayList;
+    invoke-direct {p0}, Ljava/util/ArrayList;-><init>()V
 
-    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V
-
-    return-object v0
-
-    :smfix_have
-
-    .line 170
-    :try_start_0
-    iget-object v0, p0, Landroid/content/pm/ShortcutManager;->mService:Landroid/content/pm/IShortcutService;
-
-    iget-object v1, p0, Landroid/content/pm/ShortcutManager;->mContext:Landroid/content/Context;
-
-    invoke-virtual {v1}, Landroid/content/Context;->getPackageName()Ljava/lang/String;
-
-    move-result-object v1
-
-    .line 171
-    invoke-virtual {p0}, Landroid/content/pm/ShortcutManager;->injectMyUserId()I
-
-    move-result v2
-
-    .line 170
-    const/4 v3, 0x2
-
-    invoke-interface {v0, v1, v3, v2}, Landroid/content/pm/IShortcutService;->getShortcuts(Ljava/lang/String;II)Landroid/content/pm/ParceledListSlice;
-
-    move-result-object v0
-
-    .line 171
-    invoke-virtual {v0}, Landroid/content/pm/ParceledListSlice;->getList()Ljava/util/List;
-
-    move-result-object v0
-    :try_end_15
-    .catch Landroid/os/RemoteException; {:try_start_0 .. :try_end_15} :catch_16
-
-    .line 170
-    return-object v0
-
-    .line 172
-    :catch_16
-    move-exception v0
-
-    .line 173
-    .local v0, "e":Landroid/os/RemoteException;
-    invoke-virtual {v0}, Landroid/os/RemoteException;->rethrowFromSystemServer()Ljava/lang/RuntimeException;
-
-    move-result-object v1
-
-    throw v1
+    return-object p0
 .end method
 
 .method public getIconMaxHeight()I
@@ -664,7 +615,7 @@
 .end method
 
 .method public getManifestShortcuts()Ljava/util/List;
-    .registers 5
+    .registers 1
     .annotation system Ldalvik/annotation/Signature;
         value = {
             "()",
@@ -673,61 +624,12 @@
             ">;"
         }
     .end annotation
-    iget-object v0, p0, Landroid/content/pm/ShortcutManager;->mService:Landroid/content/pm/IShortcutService;
 
-    if-nez v0, :smfix_have
+    new-instance p0, Ljava/util/ArrayList;
 
-    new-instance v0, Ljava/util/ArrayList;
+    invoke-direct {p0}, Ljava/util/ArrayList;-><init>()V
 
-    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V
-
-    return-object v0
-
-    :smfix_have
-
-    .line 190
-    :try_start_0
-    iget-object v0, p0, Landroid/content/pm/ShortcutManager;->mService:Landroid/content/pm/IShortcutService;
-
-    iget-object v1, p0, Landroid/content/pm/ShortcutManager;->mContext:Landroid/content/Context;
-
-    invoke-virtual {v1}, Landroid/content/Context;->getPackageName()Ljava/lang/String;
-
-    move-result-object v1
-
-    .line 191
-    invoke-virtual {p0}, Landroid/content/pm/ShortcutManager;->injectMyUserId()I
-
-    move-result v2
-
-    .line 190
-    const/4 v3, 0x1
-
-    invoke-interface {v0, v1, v3, v2}, Landroid/content/pm/IShortcutService;->getShortcuts(Ljava/lang/String;II)Landroid/content/pm/ParceledListSlice;
-
-    move-result-object v0
-
-    .line 191
-    invoke-virtual {v0}, Landroid/content/pm/ParceledListSlice;->getList()Ljava/util/List;
-
-    move-result-object v0
-    :try_end_15
-    .catch Landroid/os/RemoteException; {:try_start_0 .. :try_end_15} :catch_16
-
-    .line 190
-    return-object v0
-
-    .line 192
-    :catch_16
-    move-exception v0
-
-    .line 193
-    .local v0, "e":Landroid/os/RemoteException;
-    invoke-virtual {v0}, Landroid/os/RemoteException;->rethrowFromSystemServer()Ljava/lang/RuntimeException;
-
-    move-result-object v1
-
-    throw v1
+    return-object p0
 .end method
 
 .method public getMaxShortcutCountForActivity()I
@@ -791,17 +693,6 @@
             ">;"
         }
     .end annotation
-    iget-object v0, p0, Landroid/content/pm/ShortcutManager;->mService:Landroid/content/pm/IShortcutService;
-
-    if-nez v0, :smfix_have
-
-    new-instance v0, Ljava/util/ArrayList;
-
-    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V
-
-    return-object v0
-
-    :smfix_have
 
     .line 303
     :try_start_0
