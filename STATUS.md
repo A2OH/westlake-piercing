@@ -79,6 +79,17 @@ libappexecfwk_common `4d2c6399` · appspawn-x `3abe3bde` · boot-framework.oat
 ## noice (`com.github.ashutoshgngwr.noice`)
 
 ### ✅ Works end-to-end
+- **🔊 Audible audio playback (tap play → speaker)** — a **free** sound (all
+  `sound_segment.is_free = 1`, e.g. campfire / 白噪声) streams its MP3 from
+  `cdn.trynoice.com`, decodes through a `android.media.MediaCodec` → OHOS
+  `OH_AudioCodec` bridge → PCM → `AudioTrack` → `OH_AudioRenderer` → SPEAKER, and
+  the app stays alive during playback (`AudioPolicyService` shows the active MUSIC
+  render stream for uid 13731). **This supersedes the old "❌ Audio output" note.**
+  Six gates fixed — in-app service bind, audio focus, a stub `libmedia_jni.so`, the
+  async MediaCodec bridge, OH-thread detach, and unmuting the MUSIC stream. **Full
+  detail: `docs/noice-audio-to-speaker-chain.md`; reproduce: REPRODUCE.md §11.**
+  Validated on a later gen (bridge `363433a0`, framework pi11 `19245e0d`); premium
+  segments remain the app's own paywall (signed-out filter).
 - **noice renders stably**: AppIntro welcome slide + MainActivity (声音库 library
   + 5-tab bottom nav + shuffle FAB), dark theme, live clock. (libhwui G3.8 +
   ASurfaceControl no-op + new-surface EGL fix + bridge.)
@@ -128,12 +139,12 @@ libappexecfwk_common `4d2c6399` · appspawn-x `3abe3bde` · boot-framework.oat
   arbitration, deeper than the bridge).
 
 ### ❌ Not done
-- **Audio output** — play *click* works and ExoPlayer/SoundPlaybackService binds,
-  but the SoundPlaybackService ability never runs its player, and the runtime
-  exposes no AudioTrack path; actual PCM → AudioTrack → OH HAL output is not
-  wired. `android.media.AudioTrack` isn't even in the device framework.jar.
-  OH_AudioRenderer NDK exists, so an AudioTrack→OH bridge is buildable *in
-  principle*, but it is a separate multi-component project.
+- ~~**Audio output**~~ — **DONE** (moved to ✅ above / REPRODUCE.md §11 /
+  `docs/noice-audio-to-speaker-chain.md`). The old blocker ("SoundPlaybackService
+  never runs its player; no AudioTrack path") is resolved: the in-app service bind
+  makes the player run, and the MediaCodec→OH_AudioCodec + AudioTrack→OH_AudioRenderer
+  bridges wire PCM to the OH HAL. It **was** a multi-component project — six gates —
+  now complete for free sounds.
 - **Bottom-nav tabs via raw MMI touch** — y≥1208 is consumed by the OHOS systemui
   nav window; tabs are driven via the tap control channel (`echo N >
   /data/local/tmp/noice_tap`) instead.
@@ -145,6 +156,11 @@ libappexecfwk_common `4d2c6399` · appspawn-x `3abe3bde` · boot-framework.oat
 runtime `16e08711` (**un-rebuildable** base) · bridge `2967c30c` · libhwui
 `8b8f84ec` · framework.jar `15396933` · libv4force.so `7c3e5ece…` · libtlsjni.so
 `e248cc47…` · tlsjni-extra.dex `01ade5c4…` · cacerts.tgz `888d018d…`
+
+**Audio-config gen** (REPRODUCE.md §11, the audible-playback path): bridge
+`363433a0` (MediaCodec shim + in-process bind) · framework.jar pi11 `19245e0d`
+(`requestAudioFocus`→GRANTED) · `libmedia_jni.so` stub `b14deaa0` · adapter-mainline-
+stubs.jar `2b916800` (`getActiveNetwork`→new Network).
 
 ---
 

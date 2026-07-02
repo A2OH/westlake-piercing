@@ -36,6 +36,7 @@ This is a thorough, copy-pasteable procedure. Adjust the host paths (clang, SDK,
 8. TEST instructions (the UX fixtures + NetTest + the per-page/per-submenu table)
 9. Honest limitations & flakiness
 10. Artifacts: component md5s & provenance
+11. **Audio playback — tap play → speaker (the six gates)** ← NEW
 
 ---
 
@@ -814,3 +815,142 @@ Large/un-rebuildable binaries (runtime `.so`, the patched JARs, the boot image,
 and in `ARTIFACT-INVENTORY.txt` so they can be reproduced or matched. All
 sources, scripts, smali patches, the eBPF reference, the test fixtures and the
 small data blobs are in this repo.
+
+---
+
+## 11. Audio playback — tap play → speaker (the six gates)
+
+> **This is the audio-output milestone that the "❌ Not done → Audio output" note
+> predates.** noice now **plays audible MP3 sound**: tap a free sound's ▶ → it
+> streams the MP3 from the CDN → decodes it through a
+> `android.media.MediaCodec` → OHOS `OH_AudioCodec` bridge → PCM → `AudioTrack`
+> → `OH_AudioRenderer` → speaker, and stays alive during playback. The full
+> root-cause writeup is **`docs/noice-audio-to-speaker-chain.md`**; this section
+> is the repeatable procedure and the artifacts.
+>
+> Validated on a later component generation than §5–§10 above (bridge
+> `363433a0`, framework **pi11** `19245e0d`). The board reaches `trynoice.com`
+> directly on :443 (its firewall whitelists that host), so the app streams over
+> HTTPS without the §7/§5F native-TLS stack; if your board still hits the
+> conscrypt TLS wall (§ STATUS "Live HTTPS data fetch"), resolve that first — the
+> audio chain begins **after** the MP3 bytes arrive.
+
+### Signal path
+
+```
+tap ▶ → SoundPlaybackService.onStartCommand(playSound, soundId)
+      → SoundPlayerManager.g()                [gate 1: needs the subscription bind]
+      → AudioManager.requestAudioFocus()==GRANTED   [gate 2]
+      → LocalSoundPlayer.o() queueNextSegment  (isFree filter when signed-out)
+      → "noice://cdn/library/…/128k.mp3" → ExoPlayer setMediaItem + prepare
+      → d3/a HTTP DataSource → https://cdn.trynoice.com/library/…/128k.mp3
+      → MediaCodecAudioRenderer → MediaCodecList/MediaCodec   [gates 3,4]
+      → OH_AudioCodec decodes MP3 → PCM
+      → DefaultAudioSink → AudioTrack → OH_AudioRenderer shim
+      → OHOS AudioPolicyService → SPEAKER  (unmuted)          [gate 6]
+```
+
+### The six gates (each silently blocked playback; fix in order)
+
+1. **In-app service bind.** `SoundPlaybackService.onCreate` binds
+   `SubscriptionStatusPollService`; playback gates on that subscription state.
+   The adapter failed all in-app binds → play blocked with no socket/error.
+   Fix (native, no boot regen): `bridge-src/oh_inproc_service.cpp`
+   `inproc_bindServiceSync2()` creates/reuses the Service, calls `onBind`, and
+   delivers the `IBinder` via `ServiceConnectionRegistry.onServiceConnected`.
+   Wired in `bridge-src/activity_manager_adapter.cpp` `nativeConnectAbility`:
+   light services `createIfMissing=1`; **`SoundPlaybackService` reuse-only**
+   (never create the heavy ExoPlayer `onCreate` at a launch bind — that regressed
+   the app before; it is started via `startService(playSound)`).
+
+2. **Audio focus.** `SoundPlayerManager` needs
+   `requestAudioFocus()==AUDIOFOCUS_REQUEST_GRANTED (1)` before it queues audio;
+   the stub audio service never granted it (no throw, just parks). Fix:
+   `framework-patch-tools/PatchReturnOne.java` rewrites all 5
+   `AudioManager.requestAudioFocus` overloads → `return 1`, in framework
+   `classes2.dex`; regen the boot image (§5C recipe) → framework **pi11**.
+
+3. **Stub `libmedia_jni.so`.** `MediaCodecList/MediaCodec.<clinit>` call
+   `System.loadLibrary("media_jni")` then a native in the **same** `<clinit>`;
+   ART re-resolves those natives against the loaded lib, dropping the zygote
+   `RegisterNatives`, and the device has no `libmedia_jni.so` →
+   `UnsatisfiedLinkError`. Fix: build `native-libs/libmedia_jni_stub.c` as
+   `libmedia_jni.so` (its `JNI_OnLoad` `dlopen`s the bridge and calls the exported
+   `register_MediaCodec_shim`), deploy to `/system/lib` + `/system/android/lib`.
+
+4. **MediaCodec → OH_AudioCodec bridge (async).**
+   `bridge-src/oh_mediacodec_shim.cpp` bridges `MediaCodec` + `MediaCodecList`
+   to `OH_AudioCodec` (`libnative_media_acodec.so`). noice's ExoPlayer uses the
+   **asynchronous** adapter, so `native_setCallback` fires
+   `onInputBufferAvailable / onOutputBufferAvailable / onOutputFormatChanged`
+   from the OH callbacks. **Key:** OH delivers the `OH_AVBuffer` *inside* the
+   callback (`OH_AudioCodec_GetInputBuffer(idx)` returns NULL), so the shim
+   captures the buffer per index; otherwise ExoPlayer NPEs on a null
+   `ByteBuffer.position()`.
+
+5. **Detach OH callback threads.** The OH callbacks run on native threads the
+   shim `AttachCurrentThread`s; ART aborts if they exit without
+   `DetachCurrentThread`. Fix: a `pthread_key` destructor in `attachEnv()`.
+
+6. **Unmute the device MUSIC stream.** After the above, `AudioPolicyService`
+   shows an active MUSIC render stream for uid 13731 on the SPEAKER but produces
+   no sound because MUSIC `mute = 1`. Unmute: `uinput -K -d 16 -u 16`
+   (keycode 16 = `VOLUME_UP`) a few times → `mute = 0`.
+
+### Build & deploy (deltas on top of §5–§6)
+
+```sh
+# 1. Bridge with the MediaCodec shim + in-process bind (build per §5A, then):
+#    the new sources are bridge-src/oh_mediacodec_shim.cpp,
+#    oh_inproc_service.cpp, activity_manager_adapter.cpp.
+#    -> deploy liboh_adapter_bridge.so (363433a0) to /system/lib
+
+# 2. Stub libmedia_jni.so (arm32, musl sysroot; ABI-minimal, no android libs):
+clang --target=arm-linux-ohos -march=armv7-a --sysroot=$SYSROOT \
+  -I$JNI_INCLUDE -I$SYSROOT/include/arm-linux-ohos \
+  -shared -fPIC -ldl -o libmedia_jni.so native-libs/libmedia_jni_stub.c
+#    -> deploy to /system/lib AND /system/android/lib (b14deaa0 no-log / stub w/ dlopen)
+
+# 3. Audio-focus framework patch (PatchReturnOne) + boot regen (§5C):
+java -cp "$SMALI_CP" PatchReturnOne framework-classes2.dex classes2_af.dex \
+  "Landroid/media/AudioManager;|requestAudioFocus"
+#    reassemble framework.jar -> pi11 (19245e0d), regen boot, deploy
+
+# 4. Connectivity: getActiveNetwork -> new Network on adapter-mainline-stubs.jar
+#    (PatchReturnNew, see framework-smali-patches/unified-connectivity/), in the
+#    same boot regen.
+```
+
+Bring-up is the standard §3 recipe. Then: launch noice, scroll to a **fully-free**
+sound (all `sound_segment.is_free = 1`, e.g. campfire / 白噪声 / brownian_noise —
+premium segments are the app's own paywall, filtered when signed-out), tap ▶, and
+unmute (gate 6).
+
+### Verify it's really playing
+
+```sh
+# active OHOS render stream on the speaker (uid 13731, MUSIC, unmuted):
+hidumper -s AudioPolicyService | grep -iE "MUSIC: mute|curActiveCount|clientUID : 13731|streamUsage"
+# the decode/audio chain in the app's adapter_child_<pid>.stderr:
+#   queueInput size=384  (MP3 frames in) -> cbOutput size=4608 (PCM out)
+#   OH_ATShim native_setup ok rate=48000 ch=2   (AudioTrack -> OH_AudioRenderer)
+# device reachability probe (build/run diagnostics/netcheck2.c on device):
+#   cdn.trynoice.com:443  TCP connect OK   (whitelist firewall; 8.8.8.8 blocked)
+```
+
+### Audio-config artifacts
+
+| Component | md5 | In repo |
+|---|---|---|
+| `liboh_adapter_bridge.so` (MediaCodec shim + bind) | `363433a0` | src: `bridge-src/oh_mediacodec_shim.cpp`, `oh_inproc_service.cpp`, `activity_manager_adapter.cpp` |
+| `framework.jar` (pi11, `requestAudioFocus`→GRANTED) | `19245e0d` | patcher: `framework-patch-tools/PatchReturnOne.java` |
+| `libmedia_jni.so` (stub) | `b14deaa0`/`c8767d1e` | src: `native-libs/libmedia_jni_stub.c` |
+| `adapter-mainline-stubs.jar` (`getActiveNetwork`→new Network) | `2b916800` | patch: `framework-smali-patches/unified-connectivity/` |
+| device reachability probe | — | `diagnostics/netcheck2.c` |
+
+### Known limits
+- Plays **free** sounds; premium segments are noice's paywall (signed-out
+  filter), not an adapter limit.
+- The play-button UI still shows ▶ not pause — the `SoundPlaybackService` UI-side
+  bind is display-only and races the service `onCreate`; audio is unaffected.
+- Validated on the whitelist-firewall board (reaches `trynoice.com` only).
