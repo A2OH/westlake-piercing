@@ -28,12 +28,13 @@
 
 using namespace oh_adapter;
 
-// [FIX-AUDIO 2026-06-30] in-process service execution (oh_inproc_service.cpp)
+// [FIX-AUDIO 2026-06-30 / SYSTEMATIC BIND 2026-07-03] in-process service
+// execution (oh_inproc_service.cpp)
 extern "C" int inproc_isInApp(JNIEnv*, const char*);
 extern "C" int inproc_isService(JNIEnv*, const char*);
 extern "C" int inproc_startService(JNIEnv*, const char*, const char*, const char*, const char*, const char*);
-extern "C" int inproc_bindService(JNIEnv*, const char*, const char*, int);
-extern "C" int inproc_bindServiceSync2(JNIEnv*, const char*, const char*, int, int);
+extern "C" int inproc_bindService2(JNIEnv*, const char*, const char*, int);
+extern "C" int inproc_disconnect(JNIEnv*, int);
 
 namespace {
 
@@ -97,31 +98,32 @@ jint nativeConnectAbility_impl(JNIEnv* env, jclass,
     want.abilityName = jstr(env, abilityName);
     LOGI("nativeConnectAbility: bundle=%s, ability=%s, connId=%d",
          want.bundleName.c_str(), want.abilityName.c_str(), connectionId);
-    // [FIX-AUDIO 2026-06-30] in-app Service bind: do NOT run the (heavy ExoPlayer)
-    // onCreate here — noice binds at LAUNCH and running it synchronously kills the
-    // launch. Fail the bind fast (noice tolerates this, degrades, survives launch);
-    // the service is actually run lazily on startService(playSound) below.
+    // [SYSTEMATIC BIND 2026-07-03] In-app Android Services are not OHOS abilities;
+    // bind them in-process with a fully GENERIC policy (no per-app class names):
+    //  - already-running instance -> onBind binder delivered immediately;
+    //  - not yet created -> async create via the framework's own
+    //    scheduleCreateService (onCreate on the main looper, real
+    //    ActivityThread.mServices bookkeeping) and onServiceConnected delivered
+    //    once the instance appears. Android's bind contract is asynchronous, so
+    //    the late delivery is spec-conformant. This subsumes the old
+    //    "SoundPlaybackService reuse-only" heuristic: heavy onCreate work never
+    //    runs synchronously inside the caller's bindService anymore, for ANY app.
     if (inproc_isInApp(env, want.bundleName.c_str()) &&
         inproc_isService(env, want.abilityName.c_str())) {
-        // [FIX-AUDIO 2026-07-03] Deliver in-app service binds so noice's playback
-        // gates resolve: SubscriptionStatusPollService (subscription state) and the
-        // UI's SoundPlaybackService controller. The heavy SoundPlaybackService is
-        // bound REUSE-ONLY (createIfMissing=0): only when it's already running (it's
-        // started via startService(playSound)); never created at launch-bind, which
-        // regressed noice. Light services are created on demand (createIfMissing=1).
-        int createIfMissing =
-            (want.abilityName.find("SoundPlaybackService") != std::string::npos) ? 0 : 1;
-        int r = inproc_bindServiceSync2(env, want.bundleName.c_str(),
-                                        want.abilityName.c_str(), connectionId, createIfMissing);
-        LOGI("[FIX-AUDIO] in-app bind %s connId=%d createIfMissing=%d rc=%d",
-             want.abilityName.c_str(), connectionId, createIfMissing, r);
+        int r = inproc_bindService2(env, want.bundleName.c_str(),
+                                    want.abilityName.c_str(), connectionId);
+        LOGI("[FIX-AUDIO] in-app bind %s connId=%d rc=%d (generic async)",
+             want.abilityName.c_str(), connectionId, r);
         return (r == 0) ? 0 : -1;
     }
     return OHAbilityManagerClient::getInstance().connectAbility(want, connectionId);
 }
 
-jint nativeDisconnectAbility_impl(JNIEnv*, jclass, jint connectionId) {
+jint nativeDisconnectAbility_impl(JNIEnv* env, jclass, jint connectionId) {
     LOGI("nativeDisconnectAbility: connectionId=%d", connectionId);
+    // In-proc connIds were never seen by OHOS — handle them here instead of
+    // feeding OHOS DisconnectAbility a foreign id.
+    if (inproc_disconnect(env, connectionId) == 0) return 0;
     return OHAbilityManagerClient::getInstance().disconnectAbility(connectionId);
 }
 
