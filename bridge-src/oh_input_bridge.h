@@ -99,7 +99,17 @@ public:
      * fall back to injectKeyEvent's InputChannel write).
      */
     int32_t dispatchKeyViaViewRoot(int32_t action, int32_t androidKeyCode,
-                                   int64_t downTime, int64_t eventTime);
+                                   int64_t downTime, int64_t eventTime,
+                                   int32_t metaState = 0);
+
+    /**
+     * Commit a UTF-8 text string into the focused editable view via a single
+     * ACTION_MULTIPLE KeyEvent carrying the characters (TextView.onKeyMultiple
+     * inserts event.getCharacters() directly — no KeyCharacterMap dependency,
+     * unlike per-key dispatch). Same in-process ViewRootImpl bypass + main-thread
+     * post as dispatchKeyViaViewRoot. Returns 0 on success, negative on failure.
+     */
+    int32_t dispatchCharactersViaViewRoot(const char* utf8);
 
     /**
      * Dispatch a touch MotionEvent DIRECTLY into the focused window's
@@ -112,6 +122,15 @@ public:
      */
     int32_t dispatchTouchViaViewRoot(int32_t action, float x, float y,
                                      int64_t downTime, int64_t eventTime);
+
+    /** DOWN -> N*MOVE -> UP drag gesture for sliders / scroll / dial. */
+    int32_t dispatchDragViaViewRoot(float x1, float y1, float x2, float y2);
+
+    /** Forward ONE real MotionEvent (action as-is: DOWN/MOVE/UP/CANCEL) to the
+     *  focused decor view via OHTouchInjector.dispatchTouchOnMain — used for the
+     *  real-MMI pointer stream so DOWN+MOVE+UP reach RecyclerView (scroll). */
+    int32_t dispatchSingleTouchViaViewRoot(int32_t action, float x, float y,
+                                           int64_t downTimeNs, int64_t eventTimeNs);
 
     /**
      * Set JNI context for callbacks to Java layer.
@@ -149,6 +168,21 @@ public:
      * thread. Started once per process from subscribeMmi.
      */
     void startTapControlChannel();
+
+    /**
+     * Start a background poller that reads TEXT-entry commands from a control
+     * file (/data/local/tmp/noice_text) and types them into the focused editable
+     * view via dispatchKeyViaViewRoot (in-process KeyEvents on the UI thread —
+     * the same proven bypass taps use, so it works without a summoned soft
+     * keyboard). App-agnostic: any focused EditText receives the characters.
+     * Line semantics (one command per write, file truncated after):
+     *   plain text          -> type each char (letters/digits/@._-+ and space)
+     *   "ENTER"             -> KEYCODE_ENTER (submit / IME action)
+     *   "DEL" or "DEL N"    -> N backspaces (default 1)
+     *   "CLEAR"             -> many backspaces to empty a field
+     * Started once per process from subscribeMmi.
+     */
+    void startTextControlChannel();
 
     /**
      * Get the current active session id (for the MMI consumer to route to).

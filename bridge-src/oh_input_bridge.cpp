@@ -347,7 +347,8 @@ int32_t OHInputBridge::injectKeyEvent(int32_t sessionId, int32_t action,
 // ============================================================
 int32_t OHInputBridge::dispatchKeyViaViewRoot(int32_t action, int32_t keyCode,
                                               int64_t downTimeNs,
-                                              int64_t eventTimeNs) {
+                                              int64_t eventTimeNs,
+                                              int32_t metaState) {
     if (!jvm_) { LOGE("dispatchKeyViaViewRoot: no JavaVM"); return -1; }
     JNIEnv* env = nullptr;
     bool needDetach = false;
@@ -375,7 +376,7 @@ int32_t OHInputBridge::dispatchKeyViaViewRoot(int32_t action, int32_t keyCode,
     jlong evtMs  = eventTimeNs / 1000000LL;
     jobject keyEvent = env->NewObject(
         keCls, keCtor, downMs, evtMs, (jint)action, (jint)keyCode,
-        (jint)0 /*repeat*/, (jint)0 /*meta*/, (jint)-1 /*deviceId=VIRTUAL*/,
+        (jint)0 /*repeat*/, (jint)metaState, (jint)-1 /*deviceId=VIRTUAL*/,
         (jint)0 /*scancode*/, (jint)0 /*flags*/, (jint)0x101 /*SOURCE_KEYBOARD*/);
     if (!keyEvent || env->ExceptionCheck()) return fail("NewObject KeyEvent");
 
@@ -448,6 +449,97 @@ int32_t OHInputBridge::dispatchKeyViaViewRoot(int32_t action, int32_t keyCode,
 }
 
 // ============================================================
+// dispatchCharactersViaViewRoot — commit a text STRING via one KeyEvent
+// ============================================================
+// Per-key events don't type on this runtime: TextView's KeyListener needs
+// KeyEvent.getUnicodeChar(), which loads a KeyCharacterMap for the (virtual)
+// device — that map isn't resolvable here, so unicode comes back 0 and nothing
+// inserts. The classic workaround (how soft IMEs commit text via key events):
+// build an ACTION_MULTIPLE KeyEvent that CARRIES the characters string via the
+// KeyEvent(long downTime, String characters, int deviceId, int flags) ctor.
+// ViewRootImpl delivers it to the focused view; TextView.onKeyMultiple(
+// KEYCODE_UNKNOWN, ...) reads event.getCharacters() and inserts it directly —
+// no KeyCharacterMap, no per-char mapping. Same in-process ViewRootImpl bypass,
+// same main-thread post (InputEventBridge.dispatchOnMainThread) as the key path.
+int32_t OHInputBridge::dispatchCharactersViaViewRoot(const char* utf8) {
+    if (!jvm_ || !utf8 || !*utf8) return -1;
+    JNIEnv* env = nullptr;
+    bool needDetach = false;
+    if (jvm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        JavaVMAttachArgs args{JNI_VERSION_1_6, "oh-text-dispatch", nullptr};
+        if (jvm_->AttachCurrentThread(&env, &args) != JNI_OK) return -1;
+        needDetach = true;
+    }
+    auto fail = [&](const char* why) -> int32_t {
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        LOGE("dispatchCharactersViaViewRoot: %s", why);
+        if (needDetach) jvm_->DetachCurrentThread();
+        return -1;
+    };
+
+    // KeyEvent(long downTime, String characters, int deviceId, int flags)
+    // -> ACTION_MULTIPLE, keyCode=KEYCODE_UNKNOWN, carries the characters.
+    jclass keCls = env->FindClass("android/view/KeyEvent");
+    if (!keCls || env->ExceptionCheck()) return fail("FindClass KeyEvent");
+    jmethodID keCtor = env->GetMethodID(keCls, "<init>", "(JLjava/lang/String;II)V");
+    if (!keCtor || env->ExceptionCheck()) return fail("KeyEvent(String) ctor");
+    jstring jchars = env->NewStringUTF(utf8);
+    jobject keyEvent = env->NewObject(keCls, keCtor, (jlong)0, jchars,
+                                      (jint)-1 /*VIRTUAL*/, (jint)0 /*flags*/);
+    if (!keyEvent || env->ExceptionCheck()) return fail("NewObject KeyEvent(String)");
+
+    // Focused ViewRootImpl receiver (same scan as dispatchKeyViaViewRoot).
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    jmethodID getInst = env->GetStaticMethodID(wmgCls, "getInstance", "()Landroid/view/WindowManagerGlobal;");
+    jobject wmg = env->CallStaticObjectMethod(wmgCls, getInst);
+    if (!wmg || env->ExceptionCheck()) return fail("WMG.getInstance");
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = env->GetObjectField(wmg, mRootsF);
+    if (!roots) return fail("mRoots null");
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jint n = env->CallIntMethod(roots, sizeM);
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+    jfieldID recvF = env->GetFieldID(vriCls, "mInputEventReceiver",
+                        "Landroid/view/ViewRootImpl$WindowInputEventReceiver;");
+    jclass viewCls = env->FindClass("android/view/View");
+    jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
+    jobject receiver = nullptr, fallbackRecv = nullptr;
+    for (jint i = 0; i < n; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (!vri) continue;
+        jobject recv = env->GetObjectField(vri, recvF);
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (recv && view) {
+            jboolean focused = env->CallBooleanMethod(view, hasFocusM);
+            if (focused) receiver = env->NewLocalRef(recv);
+            else if (!fallbackRecv) fallbackRecv = env->NewLocalRef(recv);
+        }
+        if (recv) env->DeleteLocalRef(recv);
+        if (view) env->DeleteLocalRef(view);
+        env->DeleteLocalRef(vri);
+        if (receiver) break;
+    }
+    if (!receiver) receiver = fallbackRecv;
+    if (!receiver) { env->DeleteLocalRef(keyEvent); return fail("no ViewRootImpl receiver"); }
+
+    jclass iebCls = env->FindClass("adapter/window/InputEventBridge");
+    jmethodID domt = env->GetStaticMethodID(iebCls, "dispatchOnMainThread",
+        "(Landroid/view/InputEventReceiver;ILandroid/view/InputEvent;)V");
+    if (!domt || env->ExceptionCheck()) return fail("dispatchOnMainThread id");
+    static std::atomic<int32_t> s_txtSeq{0x50000000};
+    jint seq = s_txtSeq.fetch_add(1);
+    env->CallStaticVoidMethod(iebCls, domt, receiver, seq, keyEvent);
+    if (env->ExceptionCheck()) return fail("dispatchOnMainThread call");
+    LOGI("dispatchCharactersViaViewRoot: \"%s\" seq=%d -> ViewRootImpl OK", utf8, seq);
+    env->DeleteLocalRef(keyEvent);
+    if (needDetach) jvm_->DetachCurrentThread();
+    return 0;
+}
+
+// ============================================================
 // VelocityTracker JNI stub
 // ============================================================
 // The deployed runtime (liboh_android_runtime.so) never registers
@@ -486,6 +578,52 @@ static void ensureVelocityTrackerStub(JNIEnv* env) {
     LOGI("ensureVelocityTrackerStub: RegisterNatives rc=%d (7 methods)", (int)rc);
     if (rc == 0) done.store(true);
     env->DeleteLocalRef(vt);
+}
+
+// ============================================================
+// resolveTouchInjector — find the OHTouchInjector helper class
+// ============================================================
+// Resolution order (so EVERY app gets touch, not just noice):
+//   1. BCP class adapter/window/OHTouchInjector via env->FindClass — FindClass
+//      uses the system/boot classloader, visible to every AOSP app on the
+//      device, so this is the universal path once the class is in the BCP jar.
+//   2. FALLBACK: the per-app com.github.ashutoshgngwr.noice.OHTouchInjector via
+//      the focused window's app classloader (keeps noice working even if the
+//      BCP class is somehow absent / not yet deployed).
+// Both expose the identical static dispatchTouchOnMain(View, MotionEvent).
+// Returns a local-ref jclass on success, nullptr on failure (no pending
+// exception left set). `viewCls` is android/view/View (already resolved by the
+// caller); `decorView` is the focused decor View used to reach its classloader.
+// ============================================================
+static jclass resolveTouchInjector(JNIEnv* env, jclass viewCls, jobject decorView) {
+    // --- 1. BCP class via FindClass (system/boot classloader) ---
+    jclass bcpCls = env->FindClass("adapter/window/OHTouchInjector");
+    if (bcpCls && !env->ExceptionCheck()) {
+        LOGI("resolveTouchInjector: resolved BCP adapter/window/OHTouchInjector");
+        return bcpCls;
+    }
+    // Clear the pending NoClassDefFoundError/ClassNotFoundException before the
+    // fallback attempt (FindClass leaves it set on failure).
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (bcpCls) env->DeleteLocalRef(bcpCls);
+
+    // --- 2. FALLBACK: app classloader com.github...noice.OHTouchInjector ---
+    jmethodID getCtx = env->GetMethodID(viewCls, "getContext", "()Landroid/content/Context;");
+    if (!getCtx || env->ExceptionCheck()) { env->ExceptionClear(); LOGE("resolveTouchInjector: getContext id"); return nullptr; }
+    jobject ctx = env->CallObjectMethod(decorView, getCtx);
+    if (!ctx || env->ExceptionCheck()) { env->ExceptionClear(); LOGE("resolveTouchInjector: getContext call"); return nullptr; }
+    jclass ctxCls = env->FindClass("android/content/Context");
+    jmethodID getCL = env->GetMethodID(ctxCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    jobject cl = env->CallObjectMethod(ctx, getCL);
+    if (!cl || env->ExceptionCheck()) { env->ExceptionClear(); LOGE("resolveTouchInjector: getClassLoader"); return nullptr; }
+    jclass clCls = env->FindClass("java/lang/ClassLoader");
+    jmethodID loadClassM = env->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring hn = env->NewStringUTF("com.github.ashutoshgngwr.noice.OHTouchInjector");
+    jobject helperClsO = env->CallObjectMethod(cl, loadClassM, hn);
+    env->DeleteLocalRef(hn);
+    if (!helperClsO || env->ExceptionCheck()) { env->ExceptionClear(); LOGE("resolveTouchInjector: loadClass OHTouchInjector (app)"); return nullptr; }
+    LOGI("resolveTouchInjector: resolved app com.github.ashutoshgngwr.noice.OHTouchInjector (fallback)");
+    return static_cast<jclass>(helperClsO);
 }
 
 // ============================================================
@@ -562,21 +700,9 @@ int32_t OHInputBridge::dispatchTouchViaViewRoot(int32_t action, float x, float y
     if (!decorView) decorView = fallbackView;
     if (!decorView) return fail("no decorView");
 
-    // --- resolve noice's OHTouchInjector.dispatchTouchOnMain via app classloader ---
-    jmethodID getCtx = env->GetMethodID(viewCls, "getContext", "()Landroid/content/Context;");
-    jobject ctx = env->CallObjectMethod(decorView, getCtx);
-    if (!ctx || env->ExceptionCheck()) return fail("getContext");
-    jclass ctxCls = env->FindClass("android/content/Context");
-    jmethodID getCL = env->GetMethodID(ctxCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
-    jobject cl = env->CallObjectMethod(ctx, getCL);
-    if (!cl || env->ExceptionCheck()) return fail("getClassLoader");
-    jclass clCls = env->FindClass("java/lang/ClassLoader");
-    jmethodID loadClassM = env->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-    jstring hn = env->NewStringUTF("com.github.ashutoshgngwr.noice.OHTouchInjector");
-    jobject helperClsO = env->CallObjectMethod(cl, loadClassM, hn);
-    env->DeleteLocalRef(hn);
-    if (!helperClsO || env->ExceptionCheck()) return fail("loadClass OHTouchInjector");
-    jclass helperCls = static_cast<jclass>(helperClsO);
+    // --- resolve OHTouchInjector.dispatchTouchOnMain (BCP first, app fallback) ---
+    jclass helperCls = resolveTouchInjector(env, viewCls, decorView);
+    if (!helperCls) return fail("resolveTouchInjector failed");
     jclass meCls = env->FindClass("android/view/MotionEvent");
     jmethodID dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
         "(Landroid/view/View;Landroid/view/MotionEvent;)V");
@@ -624,6 +750,182 @@ int32_t OHInputBridge::dispatchTouchViaViewRoot(int32_t action, float x, float y
         if (exs && exc) env->ReleaseStringUTFChars(exs, exc);
     }
     LOGI("dispatchTouchViaViewRoot: TAP x=%.1f y=%.1f -> OHTouchInjector DOWN+UP (UI thread)", x, y);
+    if (needDetach) jvm_->DetachCurrentThread();
+    return 0;
+}
+
+// ============================================================
+// dispatchDragViaViewRoot — DOWN -> N*MOVE -> UP (sliders/scroll/dial)
+// ============================================================
+int32_t OHInputBridge::dispatchDragViaViewRoot(float x1, float y1, float x2, float y2) {
+    if (!jvm_) { LOGE("dispatchDragViaViewRoot: no JavaVM"); return -1; }
+    JNIEnv* env = nullptr; bool needDetach = false;
+    if (jvm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        JavaVMAttachArgs args{JNI_VERSION_1_6, "oh-drag-dispatch", nullptr};
+        if (jvm_->AttachCurrentThread(&env, &args) != JNI_OK) { LOGE("drag: attach failed"); return -1; }
+        needDetach = true;
+    }
+    auto fail = [&](const char* why) -> int32_t {
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        LOGE("dispatchDragViaViewRoot: %s", why);
+        if (needDetach) jvm_->DetachCurrentThread();
+        return -1;
+    };
+    ensureVelocityTrackerStub(env);
+
+    // --- find focused decor view (mView) ---
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    if (!wmgCls || env->ExceptionCheck()) return fail("FindClass WMG");
+    jmethodID getInst = env->GetStaticMethodID(wmgCls, "getInstance", "()Landroid/view/WindowManagerGlobal;");
+    jobject wmg = env->CallStaticObjectMethod(wmgCls, getInst);
+    if (!wmg || env->ExceptionCheck()) return fail("WMG.getInstance");
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = env->GetObjectField(wmg, mRootsF);
+    if (!roots) return fail("mRoots null");
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jint nn = env->CallIntMethod(roots, sizeM);
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+    if (!mViewF || env->ExceptionCheck()) return fail("ViewRootImpl mView");
+    jclass viewCls = env->FindClass("android/view/View");
+    jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
+    jobject decorView = nullptr, fallbackView = nullptr;
+    for (jint i = 0; i < nn; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (!vri) continue;
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (view) {
+            jboolean f = env->CallBooleanMethod(view, hasFocusM);
+            if (f) decorView = env->NewLocalRef(view);
+            else if (!fallbackView) fallbackView = env->NewLocalRef(view);
+        }
+        if (view) env->DeleteLocalRef(view);
+        env->DeleteLocalRef(vri);
+        if (decorView) break;
+    }
+    if (!decorView) decorView = fallbackView;
+    if (!decorView) return fail("no decorView");
+
+    // --- resolve OHTouchInjector.dispatchTouchOnMain (BCP first, app fallback) ---
+    jclass helperCls = resolveTouchInjector(env, viewCls, decorView);
+    if (!helperCls) return fail("resolveTouchInjector failed");
+    jclass meCls = env->FindClass("android/view/MotionEvent");
+    jmethodID dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
+        "(Landroid/view/View;Landroid/view/MotionEvent;)V");
+    if (!dispM || env->ExceptionCheck()) return fail("GetStaticMethodID dispatchTouchOnMain");
+    jmethodID obtain = env->GetStaticMethodID(meCls, "obtain", "(JJIFFI)Landroid/view/MotionEvent;");
+    jmethodID setSrc = env->GetMethodID(meCls, "setSource", "(I)V");
+    jclass scCls = env->FindClass("android/os/SystemClock");
+    jmethodID upmM = env->GetStaticMethodID(scCls, "uptimeMillis", "()J");
+    if (!obtain || !setSrc || !upmM || env->ExceptionCheck()) return fail("resolve obtain");
+
+    jlong T = env->CallStaticLongMethod(scCls, upmM);
+    auto send = [&](jint action, jfloat fx, jfloat fy, jlong et) {
+        jobject e = env->CallStaticObjectMethod(meCls, obtain, T, et, action, fx, fy, (jint)0);
+        if (e) {
+            env->CallVoidMethod(e, setSrc, (jint)0x1002);
+            env->CallStaticVoidMethod(helperCls, dispM, decorView, e);
+            if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+            env->DeleteLocalRef(e);
+        }
+    };
+    send((jint)0 /*ACTION_DOWN*/, (jfloat)x1, (jfloat)y1, T);
+    usleep(50 * 1000);
+    const int STEPS = 14;
+    for (int i = 1; i <= STEPS; ++i) {
+        jlong et = env->CallStaticLongMethod(scCls, upmM);
+        jfloat fx = x1 + (x2 - x1) * (float)i / (float)STEPS;
+        jfloat fy = y1 + (y2 - y1) * (float)i / (float)STEPS;
+        send((jint)2 /*ACTION_MOVE*/, fx, fy, et);
+        usleep(18 * 1000);
+    }
+    jlong T2 = env->CallStaticLongMethod(scCls, upmM);
+    send((jint)1 /*ACTION_UP*/, (jfloat)x2, (jfloat)y2, T2);
+    usleep(100 * 1000);
+    LOGI("dispatchDragViaViewRoot: DRAG (%.0f,%.0f)->(%.0f,%.0f) %d steps", x1, y1, x2, y2, STEPS);
+    if (needDetach) jvm_->DetachCurrentThread();
+    return 0;
+}
+
+// ============================================================
+// dispatchSingleTouchViaViewRoot — forward ONE real MotionEvent (action as-is)
+// so the real-MMI DOWN/MOVE/UP stream reaches RecyclerView/ScrollView (scroll).
+// dispatchTouchViaViewRoot only acts on UP (synthesizes a tap) and discards the
+// real DOWN + all MOVE samples -> no scroll. This forwards the actual action.
+// ============================================================
+int32_t OHInputBridge::dispatchSingleTouchViaViewRoot(int32_t action, float x, float y,
+                                                      int64_t downTimeNs, int64_t eventTimeNs) {
+    if (!jvm_) { LOGE("dispatchSingleTouch: no JavaVM"); return -1; }
+    JNIEnv* env = nullptr; bool needDetach = false;
+    if (jvm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        JavaVMAttachArgs args{JNI_VERSION_1_6, "oh-touch1", nullptr};
+        if (jvm_->AttachCurrentThread(&env, &args) != JNI_OK) { LOGE("touch1: attach failed"); return -1; }
+        needDetach = true;
+    }
+    auto fail = [&](const char* why) -> int32_t {
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        LOGE("dispatchSingleTouch: %s", why);
+        if (needDetach) jvm_->DetachCurrentThread();
+        return -1;
+    };
+    ensureVelocityTrackerStub(env);
+    // --- focused decor view (same resolution as dispatchTouchViaViewRoot) ---
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    if (!wmgCls || env->ExceptionCheck()) return fail("FindClass WMG");
+    jmethodID getInst = env->GetStaticMethodID(wmgCls, "getInstance", "()Landroid/view/WindowManagerGlobal;");
+    jobject wmg = env->CallStaticObjectMethod(wmgCls, getInst);
+    if (!wmg || env->ExceptionCheck()) return fail("WMG.getInstance");
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = env->GetObjectField(wmg, mRootsF);
+    if (!roots) return fail("mRoots null");
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jint nn = env->CallIntMethod(roots, sizeM);
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+    if (!mViewF || env->ExceptionCheck()) return fail("ViewRootImpl mView");
+    jclass viewCls = env->FindClass("android/view/View");
+    jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
+    jobject decorView = nullptr, fallbackView = nullptr;
+    for (jint i = 0; i < nn; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (!vri) continue;
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (view) {
+            jboolean f = env->CallBooleanMethod(view, hasFocusM);
+            if (f) decorView = env->NewLocalRef(view);
+            else if (!fallbackView) fallbackView = env->NewLocalRef(view);
+        }
+        if (view) env->DeleteLocalRef(view);
+        env->DeleteLocalRef(vri);
+        if (decorView) break;
+    }
+    if (!decorView) decorView = fallbackView;
+    if (!decorView) return fail("no decorView");
+    // --- resolve OHTouchInjector.dispatchTouchOnMain (BCP first, app fallback) ---
+    jclass helperCls = resolveTouchInjector(env, viewCls, decorView);
+    if (!helperCls) return fail("resolveTouchInjector failed");
+    jclass meCls = env->FindClass("android/view/MotionEvent");
+    jmethodID dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
+        "(Landroid/view/View;Landroid/view/MotionEvent;)V");
+    if (!dispM || env->ExceptionCheck()) return fail("GetStaticMethodID dispatchTouchOnMain");
+    jmethodID obtain = env->GetStaticMethodID(meCls, "obtain", "(JJIFFI)Landroid/view/MotionEvent;");
+    jmethodID setSrc = env->GetMethodID(meCls, "setSource", "(I)V");
+    if (!obtain || !setSrc || env->ExceptionCheck()) return fail("resolve obtain");
+    jlong downMs = (jlong)(downTimeNs  / 1000000LL);
+    jlong evtMs  = (jlong)(eventTimeNs / 1000000LL);
+    if (evtMs < downMs) evtMs = downMs;
+    jobject e = env->CallStaticObjectMethod(meCls, obtain, downMs, evtMs,
+                                            (jint)action, (jfloat)x, (jfloat)y, (jint)0);
+    if (e) {
+        env->CallVoidMethod(e, setSrc, (jint)0x1002 /* SOURCE_TOUCHSCREEN */);
+        env->CallStaticVoidMethod(helperCls, dispM, decorView, e);
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); LOGE("dispatchSingleTouch: dispatch THREW"); }
+        env->DeleteLocalRef(e);
+    }
     if (needDetach) jvm_->DetachCurrentThread();
     return 0;
 }
@@ -1005,10 +1307,13 @@ public:
             return;
         }
 
-        // Primary: dispatch the touch DIRECTLY into the focused ViewRootImpl
-        // (the InputChannel MOTION path doesn't land on the deployed runtime,
-        // same as keys). Fall back to the InputChannel write if no receiver.
-        int32_t trc = OHInputBridge::getInstance().dispatchTouchViaViewRoot(
+        // Primary: forward the REAL action (DOWN/MOVE/UP/CANCEL) into the focused
+        // ViewRootImpl so RecyclerView/ScrollView get a coherent moving-pointer
+        // stream -> scroll works. (dispatchTouchViaViewRoot only acts on UP and
+        // synthesizes a stationary tap, discarding the real DOWN+MOVE samples ->
+        // no scroll; that path is kept for the control channel + tab-proxy.)
+        // Fall back to the InputChannel write if no receiver.
+        int32_t trc = OHInputBridge::getInstance().dispatchSingleTouchViaViewRoot(
             androidAction, x, y, downTimeNs, eventTimeNs);
         if (trc != 0) {
             OHInputBridge::getInstance().injectTouchEvent(
@@ -1049,9 +1354,16 @@ void OHInputBridge::startTapControlChannel() {
             size_t n = fread(buf, 1, sizeof(buf) - 1, f);
             fclose(f);
             if (n == 0) continue;
-            int a = -1, b = -1;
-            int cnt = sscanf(buf, "%d %d", &a, &b);
+            int a = -1, b = -1, c = -1, d = -1;
+            int cnt = sscanf(buf, "%d %d %d %d", &a, &b, &c, &d);
             float x = -1.0f, y = -1.0f;
+            if (cnt == 4) {
+                FILE* w0 = fopen(path, "w"); if (w0) fclose(w0);
+                LOGI("tapControlChannel: drag (%d,%d)->(%d,%d)", a, b, c, d);
+                OHInputBridge::getInstance().dispatchDragViaViewRoot(
+                    (float)a, (float)b, (float)c, (float)d);
+                continue;
+            }
             if (cnt == 1 && a >= 1 && a <= 5) {
                 static const float tabX[5] = {72.f, 216.f, 360.f, 504.f, 648.f};
                 x = tabX[a - 1]; y = 1218.0f;
@@ -1068,6 +1380,105 @@ void OHInputBridge::startTapControlChannel() {
     LOGI("startTapControlChannel: polling /data/local/tmp/noice_tap");
 }
 
+// ============================================================
+// startTextControlChannel — in-process text entry side-channel
+// ============================================================
+// No soft keyboard summons on this board (the IMM->OHOS-IME attach path is
+// dead — OhImeBridge isn't in the deployed jars), and hardware keys don't
+// reach app windows (MMI wall). So text entry into a focused EditText is done
+// the same way taps are: build KeyEvents and dispatch them straight into the
+// focused ViewRootImpl on the UI thread (dispatchKeyViaViewRoot), where the
+// editor's KeyListener inserts the characters — exactly the physical-keyboard
+// path, no IME needed. App-agnostic: whatever editable view holds focus gets
+// the text. Write one command per line to /data/local/tmp/noice_text:
+//   noicetest@web-library.net   -> types the string
+//   ENTER                       -> KEYCODE_ENTER (submit)
+//   DEL / DEL 5                 -> N backspaces
+//   CLEAR                       -> empties the field (many backspaces)
+namespace {
+// Android KeyEvent constants (subset needed for text entry).
+constexpr int32_t KC_0 = 7, KC_A = 29, KC_SPACE = 62, KC_ENTER = 66, KC_DEL = 67;
+constexpr int32_t KC_PERIOD = 56, KC_MINUS = 69, KC_PLUS = 81, KC_AT = 77;
+constexpr int32_t META_SHIFT = 0x00000001 /*META_SHIFT_ON*/ | 0x00000040 /*META_SHIFT_LEFT_ON*/;
+// Map one ASCII char -> (keyCode, needsShift). Returns false if unsupported.
+bool charToKey(char ch, int32_t& code, bool& shift) {
+    shift = false;
+    if (ch >= 'a' && ch <= 'z') { code = KC_A + (ch - 'a'); return true; }
+    if (ch >= 'A' && ch <= 'Z') { code = KC_A + (ch - 'A'); shift = true; return true; }
+    if (ch >= '0' && ch <= '9') { code = KC_0 + (ch - '0'); return true; }
+    switch (ch) {
+        case ' ': code = KC_SPACE; return true;
+        case '@': code = KC_AT; return true;          // dedicated keycode -> '@'
+        case '.': code = KC_PERIOD; return true;
+        case '-': code = KC_MINUS; return true;
+        case '_': code = KC_MINUS; shift = true; return true;
+        case '+': code = KC_PLUS; return true;
+        default: return false;
+    }
+}
+}  // namespace
+
+void OHInputBridge::startTextControlChannel() {
+    static std::atomic<bool> started{false};
+    bool expected = false;
+    if (!started.compare_exchange_strong(expected, true)) return;
+    std::thread([this]() {
+        const char* path = "/data/local/tmp/noice_text";
+        auto tapKey = [this](int32_t code, int32_t meta) {
+            int64_t t = (int64_t)0;  // downTime/eventTime relative; 0 is accepted
+            dispatchKeyViaViewRoot(0 /*ACTION_DOWN*/, code, t, t, meta);
+            usleep(8 * 1000);
+            dispatchKeyViaViewRoot(1 /*ACTION_UP*/, code, t, t, meta);
+        };
+        for (;;) {
+            usleep(250 * 1000);
+            FILE* f = fopen(path, "r");
+            if (!f) continue;
+            char buf[512] = {0};
+            size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+            fclose(f);
+            if (n == 0) continue;
+            // fire once: truncate the control file immediately
+            FILE* w = fopen(path, "w"); if (w) fclose(w);
+            // strip a single trailing newline
+            while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = 0;
+            if (n == 0) continue;
+
+            if (strcmp(buf, "ENTER") == 0) {
+                LOGI("textControlChannel: ENTER");
+                tapKey(KC_ENTER, 0);
+                continue;
+            }
+            if (strncmp(buf, "DEL", 3) == 0) {
+                int cnt = 1; sscanf(buf + 3, "%d", &cnt); if (cnt < 1) cnt = 1;
+                LOGI("textControlChannel: DEL x%d", cnt);
+                for (int i = 0; i < cnt; ++i) { tapKey(KC_DEL, 0); usleep(15 * 1000); }
+                continue;
+            }
+            if (strcmp(buf, "CLEAR") == 0) {
+                LOGI("textControlChannel: CLEAR");
+                for (int i = 0; i < 80; ++i) { tapKey(KC_DEL, 0); usleep(6 * 1000); }
+                continue;
+            }
+            // Plain text: commit the whole string via one ACTION_MULTIPLE
+            // KeyEvent (KeyCharacterMap-independent). Falls back to per-key
+            // dispatch only if the string path reports failure.
+            LOGI("textControlChannel: type \"%s\" (%zu chars)", buf, n);
+            if (dispatchCharactersViaViewRoot(buf) != 0) {
+                LOGE("textControlChannel: string path failed, per-key fallback");
+                for (size_t i = 0; i < n; ++i) {
+                    int32_t code; bool shift;
+                    if (!charToKey(buf[i], code, shift)) continue;
+                    tapKey(code, shift ? META_SHIFT : 0);
+                    usleep(30 * 1000);
+                }
+            }
+            LOGI("textControlChannel: type done");
+        }
+    }).detach();
+    LOGI("startTextControlChannel: polling /data/local/tmp/noice_text");
+}
+
 void OHInputBridge::subscribeMmi(int32_t sessionId) {
     // Update active session id first — consumer reads it via getActiveSessionId().
     activeSessionId_.store(sessionId);
@@ -1082,8 +1493,9 @@ void OHInputBridge::subscribeMmi(int32_t sessionId) {
         return;
     }
 
-    // Start the reliable in-process tap side-channel (once per process).
+    // Start the reliable in-process tap + text side-channels (once per process).
     startTapControlChannel();
+    startTextControlChannel();
 
     // EventHandler running on the current thread's runner; if we're on a
     // worker thread without a runner, fall back to creating a dedicated runner
@@ -1110,6 +1522,22 @@ void OHInputBridge::subscribeMmi(int32_t sessionId) {
     }
     LOGI("subscribeMmi: MMI consumer registered for session=%d (Input_Adapter_design §3.3.5)",
          sessionId);
+
+    // [2ND-WINDOW INPUT FIX 2026-06-28] SetWindowInputEventConsumer only fires
+    // when OHOS MMI resolves a touch to OUR window — which FAILS for 2nd-layer
+    // Activities (WMS active windowId mismatch + displayId:-1 =>
+    // InputWindowsManager "active window N not found" => tap dropped). A global
+    // AddMonitor receives EVERY touch regardless of window resolution; the same
+    // consumer forwards it to the focused app's ViewRoot
+    // (getActiveSessionId -> dispatchTouchViaViewRoot), making 2nd-layer windows
+    // clickable. HANDLE_EVENT_TYPE_KP = key + pointer.
+    int32_t monId = OHOS::MMI::InputManager::GetInstance()->AddMonitor(mmiConsumer_);
+    if (monId < 0) {
+        LOGE("subscribeMmi: AddMonitor rc=%d (ohos.permission.INPUT_MONITORING?) "
+             "— per-window consumer still active", monId);
+    } else {
+        LOGI("subscribeMmi: global input monitor id=%d registered (2nd-window fix)", monId);
+    }
 }
 
 }  // namespace oh_adapter
