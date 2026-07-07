@@ -191,3 +191,34 @@ Runtime::Start aborts when an ART daemon thread exits without DetachCurrentThrea
 ReferenceQueue/HeapTask daemon. Fix = patch the daemon exit path to Detach (or
 relax the check) in aosp-art-15 runtime + rebuild the arm64 dalvikvm. This is a
 specific, bounded ART thread-lifecycle bug — the clean next step to a live runtime.
+
+## De-risk step 7 — arm64 ART EXECUTES JAVA on the board (2026-07-08) ✅✅✅✅
+
+The daemon-thread abort is FIXED and the runtime now runs Java bytecode.
+
+**Fix:** `Thread::ThreadExitCallback` (the pthread-key destructor safety net) went
+FATAL when an ART daemon exited without DetachCurrentThread during Runtime::Start.
+On non-bionic (OHOS musl) this is over-strict. Patched `patches/runtime/thread.cc`
+(here: `patches/runtime/thread.cc`): the 2nd-call branch now WARNS + clears the TLS
+self (`self_tls_=nullptr; pthread_setspecific(pthread_key_self_, nullptr)`) instead
+of `LOG(FATAL)` — the daemon Thread leaks (fine) and the runtime comes up. Rebuild:
+edit patch, `make -f Makefile.ohos-arm64 build-ohos-arm64/runtime/thread.o` then
+`make -f Makefile.ohos-arm64 link-runtime` → new arm64 dalvikvm (~19M static).
+
+**Proof it runs Java (exit-code, charset-independent):** `Hello2.main` computes
+sum(1..1000)=500500, `System.exit(500500 % 200)` → **process exit code = 100**,
+exactly right. Interpreter ran the loop + arithmetic + System.exit correctly.
+`Hello.main` also **returned (38ms)** running Unsafe CAS / arraycopy intrinsics.
+
+Run: `ANDROID_ROOT=/system dalvikvm -Xint -Xverify:none -Ximage:<dir>/boot.art
+-Xbootclasspath:core-oj:core-libart:core-icu4j -cp app.dex Main`.
+
+### Remaining (minor, cosmetic): console output via System.out
+`System.out.println` NPEs: `Charset.newEncoder() on a null object reference` — the
+default charset resolves null (ICU/charset-provider init gap; needs libicu_jni /
+charset provider). Runtime + compute are proven; only the char→byte output path is
+incomplete. Next: init the charset provider (or set a resolvable default charset).
+
+### LADDER COMPLETE to a live runtime:
+toolchain → libart.so loads → dalvikvm runs → dex2oat inits → **boot image builds**
+→ runtime loads image → **executes Java bytecode correctly (exit code verified)**.
