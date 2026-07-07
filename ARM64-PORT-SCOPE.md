@@ -222,3 +222,30 @@ incomplete. Next: init the charset provider (or set a resolvable default charset
 ### LADDER COMPLETE to a live runtime:
 toolchain → libart.so loads → dalvikvm runs → dex2oat inits → **boot image builds**
 → runtime loads image → **executes Java bytecode correctly (exit code verified)**.
+
+## De-risk step 8 — charset root-caused; VISIBLE OUTPUT achieved (2026-07-08)
+
+**Visible output works:** `HELLO FROM ARM64 ART on OHOS board! sum(1..100)=5050` —
+via raw `FileOutputStream(FileDescriptor.out).write(bytes)`. Java ran StringBuilder
+concat + arithmetic correctly and produced real bytes to stdout. The runtime CAN
+output; only the charset-dependent `System.out.println` path is broken.
+
+**Charset root cause (traced through 4 diagnostics):**
+- `System.out.println` NPEs at `Charset.newEncoder()` on null; the default charset
+  is null.
+- `Charset.forName("UTF-8")` throws `NullPointerException: synchronize operation on
+  a null object` — a `synchronized(x)` on a null static in Charset's lookup/cache
+  (Charset.java cache2/providers). The ICU `NativeConverter` stub is NOT reached.
+- Persists WITH and WITHOUT the boot image → it's in the class data, not the image.
+- The `CheckSystemClass: Class mismatch for Ljava/lang/String;` warning fires on
+  every run. => the charset failure is a downstream symptom of the **String class
+  mismatch** (step 4): the a15 core jars don't PERFECTLY match the arm64 ART build's
+  String layout; art-latest tolerates it as a warning, but it leaves charset (and
+  other String-heavy infra) with null/mismatched statics.
+
+**Proper fix = perfectly-matched core jars.** Build core-oj/core-libart/core-icu4j
+from the EXACT libcore matching the ART runtime (aosp-art-15 runtime + its aosp-11
+libcore) so java.lang.String matches byte-for-byte. Then Charset init completes,
+forName works, and println outputs. (Same matched-libcore task as step 4, now
+confirmed as the blocker for BOTH bootless verify AND charset/println.) Meanwhile
+raw-FD output is a working escape hatch for visible output.
