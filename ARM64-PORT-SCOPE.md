@@ -51,3 +51,29 @@ The OH clang cross-compiles aarch64-linux-ohos binaries that run natively on the
 
 Track all arm64-board work on this branch; keep it off `main` (which holds the
 proven arm32 board setup).
+
+## De-risk step 2 — arm64 libart.so BUILT + loads on board (2026-07-08) ✅
+
+The long pole is done. Source: `art-universal-build` (AOSP Android 11 ART, cross-
+compiled for OHOS aarch64 via `Makefile.ohos-arm64`, OHOS clang 15). All ARM64
+objects were already compiled (runtime 217/216, compiler 105, libartbase 27,
+libdexfile 17, vixl 23, ... — `make -f Makefile.ohos-arm64 all jni-stubs`).
+
+Linked a shared **libart.so** (recipe: `/home/dspfac/bridge-build-arm64/build_libart_arm64.sh`):
+- ELF64 AArch64 DYN, ~13.7 MB, **2694 runtime symbols exported**.
+- Only **33 undefined symbols**, all a bounded ENVIRONMENT set (zlib, C++ `_Unwind_*`,
+  compiler-rt builtins, libbase fd-passing, `jit_load` from libart-compiler, art TLS).
+- **On board:** the loader FULLY relocates it — with board `libz` + an env stub
+  preloaded, dlopen gets **past all symbol resolution** into libart's C++ static
+  constructors (SIGSEGV there = needs the real runtime env, i.e. the appspawn-x
+  integration, not a missing-code problem).
+
+★ NOTE: this is **AOSP Android 11 ART**, a DIFFERENT generation than the arm32
+board's patched 24Q4 ART. The arm64 port would standardize on the Android 11 ART
+(its own dex2oat/dalvikvm/boot-image), consistently — not port the 24Q4 tree.
+
+### Next rungs
+1. Relink `appspawn-x` for aarch64 (against board OH libs + this libart.so) — it
+   provides the JavaVM env that lets libart's constructors + Runtime::Init run.
+2. `libbionic_compat` arm64; resolve `libnativehelper` (art-universal has nativehelper objs).
+3. Boot image via the Android-11 `dex2oat --instruction-set=arm64`; then bridge, app reg, launch.
