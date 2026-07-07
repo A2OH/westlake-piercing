@@ -38,8 +38,8 @@ INC="-I$ADAPTER/appspawn-x/src \
 -I$AOSP/libnativehelper/include_platform"
 
 CFLAGS="--target=aarch64-linux-ohos --sysroot=$SYSROOT \
--fPIC -O2 -std=c++17 -D__OHOS__ -D__MUSL__ \
--include $BC/libcxx_compat.h \
+-fPIC -O2 -std=c++17 -D__OHOS__ -include signal.h \
+\
 -Wno-unused-parameter -Wno-missing-field-initializers -Wno-error -Wno-c99-designator"
 
 SRCS="main.cpp appspawnx_runtime.cpp spawn_server.cpp child_main.cpp"
@@ -58,15 +58,14 @@ echo "  compiled $ok/$((ok+fl))"
 [ $ok -eq 0 ] && { echo "no objects — fix 6.1 header drift first"; exit 1; }
 [ $fl -gt 0 ] && { echo "COMPILE phase incomplete ($fl failed) — resolve before link"; exit 2; }
 
-echo "=== COMPILE clean — pull board arm64 .so's for link ==="
-LIBDIR=$O/board_libs; mkdir -p $LIBDIR
-for l in libhilog.so libipc_single.z.so libsamgr_proxy.z.so libbegetutil.z.so \
-         libselinux.z.so libhap_restorecon.z.so libtokensetproc_shared.z.so; do
-    if [ ! -f $LIBDIR/$l ]; then
-        P=$(/tmp/h -t $BOARD shell "find /system/lib64 -name $l 2>/dev/null | head -1" 2>/dev/null | tr -d '\r')
-        [ -n "$P" ] && /tmp/h -t $BOARD file recv "$P" $LIBDIR/$l >/dev/null 2>&1
-    fi
-done
-echo "  board libs: $(ls $LIBDIR 2>/dev/null | wc -l)/7"
-echo "  (link: + arm64 libart=$LIBARTDIR/libart.so, libnativehelper/liblog/libbionic_compat = build next)"
-ls -la $TMP/*.o 2>/dev/null | grep -oE '[0-9]+ .*\.o'
+echo "=== COMPILE clean — LINK appspawn-x (arm64) ==="
+NH=/home/dspfac/art-latest/build-ohos-arm64/nativehelper
+AB=/home/dspfac/art-latest/build-ohos-arm64/android-base
+BUILTINS=$NDK/llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/libclang_rt.builtins.a
+LIBDIR=$O/board_libs   # 7 OHOS .so's pulled from board /system/lib64 (recv via Windows path)
+$CXX --target=aarch64-linux-ohos --sysroot=$SYSROOT -fuse-ld=lld \
+  $TMP/*.o $NH/JniInvocation.o $NH/JNIHelp.o $NH/JniConstants.o $AB/liblog_symbols.o \
+  -L$LIBDIR -lhilog -lipc_single.z -lsamgr_proxy.z -lbegetutil.z -lselinux.z -lhap_restorecon.z -ltokensetproc_shared.z \
+  $LIBARTDIR/libart.so -lc -ldl -lpthread $BUILTINS \
+  -Wl,--allow-shlib-undefined -Wl,--unresolved-symbols=ignore-in-shared-libs \
+  -o $O/appspawn-x && echo "OK appspawn-x -> $O/appspawn-x ($(ls -la $O/appspawn-x|awk '{print $5}') bytes, aarch64 PIE)"
