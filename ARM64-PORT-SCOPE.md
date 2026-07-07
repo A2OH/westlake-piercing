@@ -101,3 +101,40 @@ appspawn-x aarch64 to host adapter apps.
 
 Recipes captured: `/home/dspfac/bridge-build-arm64/build_libart_arm64.sh`; on-board
 dex2oat cmd above. art-universal-build (AOSP 11) is the arm64 ART base.
+
+## De-risk step 4 — boot classpath frontier: core-jar ↔ ART String-layout mismatch (2026-07-08)
+
+The arm64 ART runs on the board at every level tested, but boot-classpath init is
+blocked by ONE consistent root cause: **the available core jars don't match any
+arm64 ART build's compiled-in `java.lang.String` layout.** Confirmed 3 ways:
+- art-universal (AOSP-11) dex2oat: FATAL `class_linker.cc:660 InitWithoutImage:
+  Class mismatch for Ljava/lang/String;. Make sure libcore and art projects match.`
+- art-latest (aosp-art-15) dex2oat: mismatch downgraded to warning ("continuing for
+  standalone dex2oat") then SIGSEGV in the compile-time class-init (`RunRootClinits:
+  reinitializing UnstartedRuntime`).
+- art-latest dalvikvm bootless (`-Xint -Ximage:/nonexistent -Xbootclasspath:core-*`):
+  runtime inits + verifies classes, then `VerifyError: ... String not instance of
+  String` on `java.lang.Runtime.initLibPaths` — the classic two-String-types symptom
+  of the same mismatch.
+
+Available core jars on host (NONE match an arm64 ART build):
+- 5.83MB `core-oj.jar` = Android-15 lineage (`core-oj-a15.jar`; art-latest/core-jars,
+  .../art-boot-image, .../arm64-a15).
+- 5.53MB = westlake 24Q4/OAT230 deployed jars (match the arm32 board's 24Q4 ART).
+No pre-built AOSP-11 or aosp-art-15 libcore jars exist (`aosp-android-11`,
+`aosp-art-15` have the source + soong_ui.bash but no built `core-oj`/`core-libart`).
+
+### The well-defined next task
+Build matched libcore jars (`core-oj`, `core-libart`, `core-icu4j`) from the ART's
+EXACT AOSP source, then dex2oat should get past String and (a) complete the arm64
+boot image, or (b) run bootless interpreter. Options:
+- `aosp-art-15` + build its libcore → matches art-latest's arm64 dalvikvm/dex2oat
+  (which are the newest, May-4 arm64 build); OR
+- `aosp-android-11` libcore (soong `m core-oj core-libart`, or targeted javac+d8 of
+  the .bp file lists openjdk_java_files.bp / non_openjdk_java_files.bp) → matches
+  art-universal.
+Pick ONE ART generation and build its matching libcore. That unblocks the runtime.
+
+Artifacts: arm64 dalvikvm/dex2oat under art-latest/build-ohos-arm64/bin (art-15) and
+art-universal-build/build-ohos-arm64/bin (android-11). Board-run recipe (ANDROID_ROOT
+=/system, absolute --image paths) captured above.
