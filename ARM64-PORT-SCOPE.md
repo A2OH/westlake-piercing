@@ -286,3 +286,29 @@ All deliverables built + verified on board 5cdbf6af (see DELIVERABLES.md):
 - Runtime fixes: thread-detach non-fatal; Charset.cache2 manual init (forName works).
 Verified end-to-end: `dalvikvm -Ximage:boot.art ... CS6` → forName -> UTF-8, exit 0.
 Remaining long-tail: println (another force-init'd static, buffer size 0).
+
+## De-risk step 12 — FULL framework runtime VALIDATED (2026-07-08) ✅✅✅
+
+appspawn-x with the FULL 10-jar classpath (core + framework.jar + adapter jars) +
+the arm64 framework boot image, on the board:
+- JNI_CreateJavaVM returned 0; JavaVM created; **Runtime::Start completed**.
+- **AppSpawnXInit.preload() RAN** — adapter framework classes (oh-adapter-framework /
+  adapter-runtime-bcp) loaded + executed on arm64.
+- "ART VM started + framework preloaded on worker pthread" → daemon accept loop.
+- A few NoClassDefFound warnings cleared (non-fatal — the 16 skipped mainline classes).
+
+=> The framework layer works at RUNTIME, not just build. The 24Q4-lineage
+framework.jar + adapter jars run on the art-15 arm64 ART. The adapter zygote fully
+bootstraps ART + the Android framework on OHOS 6.1.0.31. Binary:
+bridge-build-arm64/out/appspawn-x-full.WORKING.
+
+### Port ladder (all on the new arm64 board)
+toolchain → libart loads → dalvikvm runs → dex2oat → core boot image → executes
+Java + println → OHOS 6.1 SDK + source → appspawn-x builds (6.1) → appspawn-x runs
+→ creates a live VM → framework boot image builds → **full-framework VM + adapter
+preload works**.
+
+### Next
+- liboh_adapter_bridge.so for arm64 (window/input/audio/IPC — expect 6.1 API drift).
+- App registration (.app→.apk + bm install on 6.1 BMS) + entry.hap.
+- Then: aa start → appspawn-x forks an app process → (bridge) → UI on screen.
