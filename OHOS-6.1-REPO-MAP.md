@@ -72,3 +72,29 @@ chipset-sdk,...}`) to link against at runtime.
 This unblocks *compiling* appspawn-x + the bridge against 6.1 ABIs. The bridge source
 was written for the older-OHOS arm32 board, so 6.1 API drift (window session zidl,
 render_service, MMI) will need per-call fixups — that's the porting work, now possible.
+
+## ✅ SDK acquired + map validated (2026-07-08)
+- **Public SDK downloaded + extracted**: `/home/dspfac/ohos-sdk-6.1/linux/native/` —
+  6.1.0.31 arm64 sysroot (`sysroot/usr/lib/aarch64-linux-ohos`: crt1.o, libc.so,
+  libc++, **libohaudio.so**, libace_napi/ndk) + bundled **OHOS clang 15.0.4**. This
+  is the correct 6.1 arm64 build toolchain (replaces the improvised sysroot).
+- **NDK public headers cover part of the UI/audio bridge WITHOUT source**:
+  `native_window`, `native_image`, `native_buffer`, `native_drawing`, `native_vsync`,
+  `ohaudio`, EGL/GLES2/3, multimedia. So the graphics/audio shims that already target
+  the NDK boundary (oh_anativewindow_shim, oh_audiotrack_shim, ohaudio) build against
+  the SDK alone. Only the DEEP inner-APIs (ability_manager, ipc_skeleton, surface
+  inner, window session zidl) need a source sync.
+- **manifest_tag.xml pins 500 repos at exact 6.1.0.31 revisions** — a precise
+  board-matching sparse sync is possible (not a floating branch). ALL mapped repos
+  confirmed present at expected paths (ability_runtime, graphic_surface,
+  window_manager, multimodalinput, audio_framework, communication_ipc, ...).
+
+### Build-toolchain env for 6.1 arm64 (use the SDK sysroot)
+```
+NDK=/home/dspfac/ohos-sdk-6.1/linux/native
+CLANG=$NDK/llvm/bin/clang++   # OHOS clang 15.0.4
+SYSROOT=$NDK/sysroot
+# --target=aarch64-linux-ohos --sysroot=$SYSROOT
+```
+### Next: sparse source sync of the ~24 inner-API repos (from the pinned manifest),
+then rebuild appspawn-x + bridge for aarch64 against 6.1 headers.
