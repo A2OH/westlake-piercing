@@ -275,3 +275,14 @@ a class-init bug in art-latest's ART runtime (its ForceInit/UnstartedRuntime cli
 handling), NOT a jar or ICU issue. Fixing it = patch the runtime's clinit execution
 (deep ART work) — the real blocker for println (and likely other static-dependent
 code). Escape hatch for output remains raw FileDescriptor writes (proven working).
+
+## GOAL COMPLETE (2026-07-08): art15 64-bit + boot image built for the new board
+
+All deliverables built + verified on board 5cdbf6af (see DELIVERABLES.md):
+- **art15 64-bit runtime** (aarch64, AOSP-15 ART v114): libart.so, dalvikvm, dex2oat
+  — all execute Java on the board.
+- **boot image ("bootloader")**: boot.art + per-jar images (arm64) — loads on board,
+  runtime executes Java with it.
+- Runtime fixes: thread-detach non-fatal; Charset.cache2 manual init (forName works).
+Verified end-to-end: `dalvikvm -Ximage:boot.art ... CS6` → forName -> UTF-8, exit 0.
+Remaining long-tail: println (another force-init'd static, buffer size 0).
