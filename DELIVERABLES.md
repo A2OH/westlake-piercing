@@ -41,8 +41,13 @@ ANDROID_ROOT=/system dalvikvm -Xint -Xverify:none \
 Verified: executes Java (arithmetic, StringBuilder, Unsafe CAS), `System.exit` code
 propagates, raw `FileDescriptor` output works, `Charset.forName` works.
 
+## Working
+- **`System.out.println` works** (multi-line, string concat, StringBuilder,
+  hex, loops — verified, exit 0) via: Charset.cache2 manual init + BufferedWriter
+  buffer-size static + lazy real-System.out install from dalvikvm main. Latest
+  runtime: `dalvikvm-arm64-println`.
+
 ## Known remaining (not blocking the goal)
-- `System.out.println` still NPEs on a different force-init'd static
-  (BufferedOutputStream buffer size 0) — same clinit-bug class, a long tail of
-  per-class manual-static fixes; raw FileDescriptor output is the escape hatch.
 - Boot-image build uses `-j1` (multi-thread compile races) and inliner disabled.
+- `Charset.defaultCharset()` (the lazy method) still returns null (the static
+  field is set, but the method recomputes); use explicit charsets. Minor.
