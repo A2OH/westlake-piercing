@@ -249,3 +249,29 @@ libcore) so java.lang.String matches byte-for-byte. Then Charset init completes,
 forName works, and println outputs. (Same matched-libcore task as step 4, now
 confirmed as the blocker for BOTH bootless verify AND charset/println.) Meanwhile
 raw-FD output is a working escape hatch for visible output.
+
+## De-risk step 9 — matched libcore jars BUILT; charset root-caused to clinit bug (2026-07-08)
+
+**Matched libcore jars built** from `/home/dspfac/aosp-libcore-15` via its
+`build_core_jars.sh` (javac 2254 srcs + 32 stubs → r8/d8): **core-oj.jar (2.4MB,
+4023 classes) + core-libart.jar (24 classes)**, saved at
+`bridge-build-arm64/core-jars-matched/` (+ here). They compile clean and are
+String-layout-compatible with the ART v114 runtime.
+
+**But this did NOT fix charset — and revealed the jar theory was wrong:**
+- `--compiler-filter=verify` shows **0 String mismatches for BOTH** the matched jars
+  AND art-latest's existing a15 jars. The "Class mismatch for String" only appears
+  during speed-compile pre-init (a different CheckSystemClass), not a real jar gap.
+- The charset NPE (`Charset.forName` → `synchronized(cache2)` on null) **persists**
+  with matched jars, bootless, and even after `Class.forName("java.nio.charset.
+  Charset", true, ...)` succeeds.
+
+**TRUE root cause (definitive): the runtime marks classes INITIALIZED without
+running their `<clinit>` field initializers.** `Charset.cache2` (a `static final
+HashMap = new HashMap<>()`, Charset.java:331) stays null → `synchronized(cache2)`
+in lookup2 → NPE. Forcing init reports success but cache2 is still null. So classes
+are flagged initialized while their static-field assignments never execute. This is
+a class-init bug in art-latest's ART runtime (its ForceInit/UnstartedRuntime clinit
+handling), NOT a jar or ICU issue. Fixing it = patch the runtime's clinit execution
+(deep ART work) — the real blocker for println (and likely other static-dependent
+code). Escape hatch for output remains raw FileDescriptor writes (proven working).
