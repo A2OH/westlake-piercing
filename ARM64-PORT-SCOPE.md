@@ -77,3 +77,27 @@ board's patched 24Q4 ART. The arm64 port would standardize on the Android 11 ART
    provides the JavaVM env that lets libart's constructors + Runtime::Init run.
 2. `libbionic_compat` arm64; resolve `libnativehelper` (art-universal has nativehelper objs).
 3. Boot image via the Android-11 `dex2oat --instruction-set=arm64`; then bridge, app reg, launch.
+
+## De-risk step 3 — arm64 ART runtime RUNS on the board (2026-07-08) ✅
+
+Beyond loading, the arm64 ART runtime *executes* on the board:
+- **dalvikvm** (art-universal `build-ohos-arm64/bin/dalvikvm`, static ELF64 AArch64,
+  16.6MB) runs on the board — parses args, prints usage, rc=0.
+- **dex2oat** (`build-ohos-arm64/bin/dex2oat`, 21MB arm64) runs on the board and
+  **initializes the ART runtime + starts boot-image compilation** — it got as far as
+  loading `java.lang.String` and checking its field layout (`runtime.cc:663`,
+  String.count/String.hash) before aborting. Reaching that point = the runtime
+  inits, loads the boot classpath, and starts the compiler.
+- Args needed: `ANDROID_ROOT=/system --android-root=/system`, ABSOLUTE `--image=`/`--oat-file=` paths.
+
+### Boot-image blocker = core-jar ↔ ART-version mismatch (tractable, not fundamental)
+The abort is a `java.lang.String` layout check: I fed art-universal's **Android 11**
+ART the art-latest core jars (android-15 lineage, 5.83MB core-oj) → String field
+layout mismatch. The westlake deployed jars (5.53MB) are 24Q4 — also wrong for ART 11.
+**Next: obtain/build matching AOSP-11 core jars** (core-oj/core-libart/core-icu4j)
+for art-universal's ART, then the on-board dex2oat should complete the arm64 boot
+image. After that: run dalvikvm with the image (full runtime init) → then relink
+appspawn-x aarch64 to host adapter apps.
+
+Recipes captured: `/home/dspfac/bridge-build-arm64/build_libart_arm64.sh`; on-board
+dex2oat cmd above. art-universal-build (AOSP 11) is the arm64 ART base.
