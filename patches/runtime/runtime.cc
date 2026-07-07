@@ -3012,6 +3012,33 @@ bool Runtime::Start() {
     }
     fprintf(stderr, "[RT] Pre-initialized I/O + Charset classes\n"); fflush(stderr);
 
+    // [ARM64-OHOS 2026-07-08] The force-init above skips <clinit>, so non-final
+    // static ints that <clinit> would set stay 0. Running real clinit here aborts
+    // (notify-without-lock in early daemon init), so set the load-bearing ones
+    // manually. BufferedWriter/BufferedReader.defaultCharBufferSize == 0 →
+    // "Buffer size <= 0" IllegalArgumentException in the PrintStream output path.
+    {
+      // Only classes already force-init'd above (avoid FindSystemClass loading a
+      // NEW class during early init, which can recurse/hang). BufferedWriter is in
+      // the io_classes list; BufferedReader is not and isn't needed for println.
+      struct { const char* cls; const char* field; int val; } int_statics[] = {
+        { "Ljava/io/BufferedWriter;", "defaultCharBufferSize", 8192 },
+        { nullptr, nullptr, 0 }
+      };
+      for (int k = 0; int_statics[k].cls != nullptr; k++) {
+        ObjPtr<mirror::Class> c = class_linker_->FindSystemClass(self, int_statics[k].cls);
+        if (c != nullptr) {
+          ArtField* f = c->FindDeclaredStaticField(int_statics[k].field, "I");
+          if (f != nullptr && f->GetInt(c) == 0) {
+            f->SetInt<false>(c, int_statics[k].val);
+            fprintf(stderr, "[RT] Set %s.%s = %d\n", int_statics[k].cls, int_statics[k].field, int_statics[k].val);
+            fflush(stderr);
+          }
+        }
+        if (self->IsExceptionPending()) self->ClearException();
+      }
+    }
+
     // [ARM64-OHOS 2026-07-08] Charset is force-marked initialized above WITHOUT
     // running its <clinit>, so its static `cache2` (a `final HashMap<String,Charset>
     // = new HashMap<>()`) stays null → `synchronized(cache2)` in Charset.lookup2
@@ -3109,6 +3136,14 @@ bool Runtime::Start() {
     }
     if (self->IsExceptionPending()) self->ClearException();
   }
+
+  // [ARM64-OHOS 2026-07-08] NOTE: constructing System.out here (PrintStream ctor
+  // chain via JNI) HANGS during early Runtime::Start (the constructor path
+  // deadlocks before the runtime is fully up — same fragility that had the older
+  // manual-System.out block disabled). It works fine IN-APP, so System.out is
+  // installed lazily from dalvikvm main instead (see dalvikvm.cc InstallSystemOut),
+  // after Runtime::Start completes. The charset (cache2) + buffer-size static fixes
+  // above are what make that in-app construction succeed.
 
   // PATCH: Replace System.addLegacyLocaleSystemProperties() with native no-op.
   // The Java implementation calls getProperty() which returns null strings in imageless
