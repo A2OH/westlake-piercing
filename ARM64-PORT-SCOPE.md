@@ -138,3 +138,33 @@ Pick ONE ART generation and build its matching libcore. That unblocks the runtim
 Artifacts: arm64 dalvikvm/dex2oat under art-latest/build-ohos-arm64/bin (art-15) and
 art-universal-build/build-ohos-arm64/bin (android-11). Board-run recipe (ANDROID_ROOT
 =/system, absolute --image paths) captured above.
+
+## De-risk step 5 — boot image frontier PINNED: UnstartedRuntime clinit crash (2026-07-08)
+
+The x86-cross approach (host x86 dex2oat with ARM64 codegen + a15 jars, the
+AOSP-standard way) gets FAR further than native-arm64 dex2oat: it inits the
+runtime, passes UnstartedRuntime/WellKnownClasses::LateInit, opens output, and
+**compiles thousands of methods** before crashing. So arm64 codegen largely works.
+
+The crash is in **compile-time class initialization** (`[CL] Root class init loop
+(imageless, kMax=51)`): the UnstartedRuntime interpreter calls
+`java.lang.Throwable.nativeFillInStackTrace` many times during root-class clinit
+(an exception storm during boot-image clinit), then a GC runs and SIGSEGVs
+(fault addr nil). This is the known-hard "class-init cascades at compile time"
+area — art-latest's own WESTLAKE_STATUS lists it under "What Doesn't Work Yet"
+("constructor triggers class init cascades that overflow"). Both ART bases hit it.
+
+### Assessment
+Completing the arm64 boot image = deep ART-runtime debugging (UnstartedRuntime
+native-method handling + exception-during-root-clinit), NOT an incremental step.
+This is the genuine porting frontier. Best pursued as a focused effort:
+- Fix/stub `nativeFillInStackTrace` (and the clinit exception path) in
+  UnstartedRuntime for the arm64 build; OR
+- Reproduce art-latest's EXACT working x86 prebuilt-boot recipe (it built a
+  working v114 x86 image — find those args/jar set/patches), then cross-target arm64.
+
+### What IS proven (the port is viable, foundation solid)
+Toolchain ✓, arm64 libart.so loads ✓, arm64 dalvikvm runs ✓, arm64 dex2oat inits
++ verifies + compiles thousands of methods ✓. Only the compile-time clinit phase
+of boot-image generation remains. Host cross-build log:
+`/home/dspfac/bridge-build-arm64/bootimg/d2o_host.err`.
