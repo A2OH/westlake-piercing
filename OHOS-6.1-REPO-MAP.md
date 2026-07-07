@@ -98,3 +98,18 @@ SYSROOT=$NDK/sysroot
 ```
 ### Next: sparse source sync of the ~24 inner-API repos (from the pinned manifest),
 then rebuild appspawn-x + bridge for aarch64 against 6.1 headers.
+
+## ✅ Sparse sync KICKED OFF (2026-07-08) — /home/dspfac/ohos-6.1-src/
+Working recipe (repo init succeeded → 502-project 6.1 manifest; selective sync of
+the 21 validated inner-API repos, NO third_party source needed — the SDK sysroot
+provides libc/libc++ headers):
+```
+cd /home/dspfac/ohos-6.1-src
+repo init -u https://gitcode.com/openharmony/manifest -b OpenHarmony-6.1-Release --no-repo-verify
+repo sync -c -j6 --no-clone-bundle $(cat valid_projects.txt)   # 21 repos, headers
+```
+★Gotchas: don't use `--fail-fast` with hand-guessed paths (one bad path aborts all);
+validate paths against `.repo/manifests/ohos/ohos.xml` (projects are in the INCLUDED
+sub-manifest, not top-level default.xml). All 21 targets confirmed present.
+Running in background; when done → build appspawn-x aarch64 vs 6.1 headers +
+`$NDK/sysroot` (NDK=/home/dspfac/ohos-sdk-6.1/linux/native).
