@@ -168,3 +168,26 @@ Toolchain ✓, arm64 libart.so loads ✓, arm64 dalvikvm runs ✓, arm64 dex2oat
 + verifies + compiles thousands of methods ✓. Only the compile-time clinit phase
 of boot-image generation remains. Host cross-build log:
 `/home/dspfac/bridge-build-arm64/bootimg/d2o_host.err`.
+
+## De-risk step 6 — arm64 BOOT IMAGE BUILDS + loads (2026-07-08) ✅✅✅
+
+The "UnstartedRuntime clinit crash" was a RED HERRING. An lldb backtrace of the
+host-reproducible crash showed the real fault: `art::HInliner::SubstituteArguments`
+— the optimizing compiler's INLINER null-derefs. Two fixes crack the boot image:
+1. **`--inline-max-code-units=0`** — disable the crashing inliner (x86 + arm64).
+2. **`-j1`** — the arm64-target compile races at -j4 (SIGSEGV); single-thread is clean.
+
+→ **arm64 boot image BUILDS** in ~4s: `boot.art` (~5MB, ELF arm64) + boot-core-libart
++ boot-core-icu4j (.oat/.vdex each). Recipe: `build_boot_image_arm64.sh` (host
+art-latest x86 dex2oat, which has ARM64 codegen; a15 core jars).
+
+→ **arm64 dalvikvm LOADS the image + runs Runtime::Start**: registers native methods
+(tolerant_native_util), root clinits (ForceInit 51 root classes), passes verification
+(with -Xverify:none). Method A/B: DynTest even reached app-native registration.
+
+### Next frontier (new, specific): daemon-thread DetachCurrentThread abort
+Runtime::Start aborts when an ART daemon thread exits without DetachCurrentThread
+(`thread.cc:2460`). Not the JIT (persists with -Xint) → it's a GC/Finalizer/
+ReferenceQueue/HeapTask daemon. Fix = patch the daemon exit path to Detach (or
+relax the check) in aosp-art-15 runtime + rebuild the arm64 dalvikvm. This is a
+specific, bounded ART thread-lifecycle bug — the clean next step to a live runtime.
