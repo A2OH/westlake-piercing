@@ -37,3 +37,27 @@ in-process load (OHOS+VM syms resolved). The ONLY remaining gap is the AOSP nati
 libs (androidfw/base/utils/binder for assets; hwui/skia for render), which need an arm64
 build (recipe exists). ART TOLERATES the bridge clinit failure so appspawn-x stays up.
 Next: arm64 build of the aosp_lib stack → bridge fully loads → app reg + aa start → UI.
+
+## AOSP support-stack build (2026-07-08): SOURCE-VERSION gap found
+Started adapting build_aosp_lib.sh → build_aosp_lib_arm64.sh (OHOS clang + aarch64 +
+6.1 SDK sysroot; bridge-build-arm64/build_aosp_lib_arm64.sh, bld fn works). BLOCKER:
+- bridge-build/aosp is HEADERS-ONLY (no .cpp for libbase/libutils/androidfw — those
+  built on ECS). It's a NEWER AOSP (android-12/13: AssetManager2::SelectedValue ×10,
+  EmptyAssetsProvider, separate AssetsProvider.h).
+- Local aosp-android-11 HAS the .cpp sources but is OLDER (SelectedValue ×0, headers
+  differ) → building libandroidfw from aosp-11 gives a DIFFERENT ABI than the bridge
+  (compiled vs bridge-build/aosp headers) expects → symbols still won't match.
+- aosp-art-15 / aosp-libcore-15 have no androidfw/libbase/libutils sources.
+
+**To unblock**: targeted sync of the MATCHING AOSP (~android-13) sources for just
+system/libbase + system/core/libutils + system/core/libcutils + frameworks/base/libs/
+androidfw + frameworks/native/libs/binder (+ later frameworks/base/libs/hwui + skia),
+then build_aosp_lib_arm64.sh compiles them (toolchain proven). Dep chain:
+bionic_compat→log→base→cutils→utils→ziparchive→androidfw; binder separately.
+
+## Net (deployment phase)
+The runtime chain WORKS to the AOSP-support-lib boundary: appspawn-x→VM→framework
+preload→in-process bridge load (all OHOS+VM syms resolve, libart NEEDED). The final
+gap is the AOSP native support libs, which need their matching (android-13-era)
+sources synced before the arm64 build (recipe + toolchain ready). That source sync is
+the next prerequisite.
