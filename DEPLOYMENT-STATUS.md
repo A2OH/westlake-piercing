@@ -61,3 +61,29 @@ preload→in-process bridge load (all OHOS+VM syms resolve, libart NEEDED). The 
 gap is the AOSP native support libs, which need their matching (android-13-era)
 sources synced before the arm64 build (recipe + toolchain ready). That source sync is
 the next prerequisite.
+
+## ✅ AOSP support stack BUILT for arm64 (2026-07-08) — android-15 sources
+Synced android-15.0.0_r1 sources (targeted: system/libbase, system/core [libutils
+split libutils/+libutils/binder/], system/logging, system/libziparchive, system/
+incremental_delivery [incfs], frameworks/base/libs/androidfw, frameworks/native/libs/
+binder; blobless sparse for the big repos). Pinned by diffing AssetsProvider.h
+(identical to android-14/15). Built via build_aosp_lib_arm64.sh (OHOS clang + aarch64
++ 6.1 SDK sysroot + musl_compat for glibc globals + -DNDEBUG + gnu++20):
+**liblog, libbase, libutils, libcutils, libziparchive, libandroidfw (30/30)** — ALL
+build AND **load clean on the board** (dltest LOADED OK). libandroidfw exports
+EmptyAssetsProvider::Create with the __h namespace = matches the bridge + board.
+
+## Remaining: last-mile OHOS symbol→lib mapping (198 undefined)
+With the 6 aosp libs + libart + 47 board libs NEEDED, the bridge still has ~198
+undefined → musl dlopen SIGSEGVs (crash in dlopen_impl during the combined load).
+Breakdown: ~29 skia (SkStream/SkCodec/SkData — stubbable via libbridge_compat), +
+OHOS methods in libs not-yet-mapped or where the specific method isn't exported by
+the obvious lib (e.g. WindowProperty::SetParentId — libwm has WindowProperty but not
+that setter; MMI PointerEvent, MessageParcel, InputMethodController, AAFwk Want/
+AbilitySchedulerStub, EventRunner). Next: finish the symbol→lib map (nm board libs,
+add to NEEDED) + expand skia stub → bridge loads fully in-process → aa start → UI.
+
+## Net
+The AOSP support-lib blocker is SOLVED (built for arm64, load on board). The bridge
+is one lib-mapping pass from loading. Everything else (appspawn-x, framework, __h ABI,
+libart NEEDED) already works.
