@@ -1,39 +1,39 @@
-# Bridge deployment to the arm64 board — status (2026-07-08)
+# Bridge deployment + appspawn-x/framework run — status (2026-07-08)
 
-## ★ CRITICAL FIX: libc++ ABI namespace (__h vs __n1)
-The board's OHOS libs (and libart) use libc++ with the **`std::__h`** inline namespace
-(they were built with the OHOS prebuilts clang + `libcxx-ohos`). I had built the bridge
-with the 6.1 **SDK/NDK** clang, whose libc++ uses **`std::__n1`**. Every OHOS API that
-passes `std::string` (or any std type) has the namespace in its mangled name → the __n1
-bridge could NOT resolve against the __h board libs (`symbol not found` at load).
+## ✅ appspawn-x + framework RUN on the board; framework loads the bridge in-process
+Ran the staged appspawn-x (/data/local/tmp/asx/) with the framework:
+```
+cd /data/local/tmp/asx
+ANDROID_ROOT=/system ICU_DATA=/data/local/tmp/asx \
+LD_LIBRARY_PATH=/data/local/tmp/asx:/system/lib64:/system/lib64/platformsdk:/system/lib64/chipset-sdk:/system/lib64/chipset-sdk-sp \
+LD_PRELOAD=/data/local/tmp/asx/liblog_shim.so setsid ./appspawn-x >asx.out 2>asx.err </dev/null &
+```
+Result: **Phase 1 (security+socket) OK → Phase 2 ART VM OK → framework preload OK**
+("Preloaded 30 classes", "Cached 11 adapter classes", "Preload complete in ~1470ms",
+"Preload completed successfully") → **Phase 4 "Ready to accept spawn requests"**, listening
+on /dev/unix/socket/AppSpawnX. The VM + 24Q4 framework run on art-15 arm64.
 
-**FIX**: build the bridge with the OHOS toolchain (same as libart):
-`OHOS_LLVM/bin/clang++ -nostdinc++ -isystem OHOS_LLVM/include/libcxx-ohos/include/c++/v1`.
-Verified: output symbols now `NSt3__h...` matching the board. build_bridge_arm64.sh updated.
+## ✅ Bridge loads in-process (the __h fix works) — resolving deps one layer at a time
+The framework's preload calls `Runtime_nativeLoad path=liboh_adapter_bridge.so`. With the
+__h toolchain fix, the bridge's OHOS symbols ALL resolve. Fixed in sequence:
+1. `JNI_GetCreatedJavaVMs not found` → **added libart.so to the bridge's NEEDED** (libart
+   defines it; ART's nativeLoad dlopen didn't put it in scope). FIXED.
+2. Now: `android::EmptyAssetsProvider::Create not found` → the bridge needs the **AOSP
+   native support libs** (androidfw/base/utils/binder), currently arm32-only.
 
-## What works now
-- Bridge compiles **83/90** with the OHOS toolchain (no regression from the NDK build).
-- Re-linked with **35 NEEDED board libs** (pulled to out/board_libs/ from /system/lib64/
-  {platformsdk,chipset-sdk,chipset-sdk-sp}) so they auto-load.
-- On-board load: **OHOS symbols now RESOLVE** (the __h fix). No more `symbol not found`
-  for IPCSkeleton::SetCallingIdentity, DataShareHelper::Creator, etc.
-- All base OHOS libs (hilog, ipc, ability_manager, render_service, scene_session, want,
-  surface) `dlopen` fine individually on the board.
+## Remaining: build the AOSP native support stack for arm64
+The bridge's *_aosp.cpp (AssetManager/ApkAssets/ResXML/Parcel) are JNI wrappers around
+AOSP C++ libs. Undefined by lib:
+- **libandroidfw** (AssetsProvider ×10, ApkAssets, ResXMLTree/Parser ×13, ResStringPool)
+- **libbase** (×15), **libutils** (String8/16 ×17), **libbinder** (sp/IBinder/RpcSession ×16)
+- (for render later: **libhwui + skia + libminikin/ft2/harfbuzz** — 11 skia syms already seen)
+These are arm32 in /home/dspfac/bridge-build/out/aosp_lib/ (machine ARM). Build recipe:
+`bridge-build/build/build_aosp_lib.sh` (targets libbase/libutils/libandroidfw/libhwui/...).
+Adapt to arm64 (OHOS clang, --target=aarch64, like the bridge) → deploy → bridge loads fully.
 
-## Remaining before the bridge fully loads standalone
-- Bare `dltest` dlopen SIGSEGVs in a **static-init** calling an unresolved symbol
-  (ignore-all left it null). Truly-undefined after 35 NEEDED libs = 356:
-  - **skia (11)**: SkColorSpace/SkImageInfo/SkBmpDecoder/SkGifDecoder/SkPngDecoder/
-    SkCodecs — OHOS bundles skia inside graphic libs; needs the board's skia lib or stubs.
-  - **VM (2)**: JNI_GetCreatedJavaVMs — libart provides at runtime.
-  - **~343 OHOS NDK (@1.0-versioned)**: OH_Pasteboard_*, OH_HiTrace_*, GetParameter,
-    BIO_new_mem_buf/EVP_sha256/SHA256 (crypto) — need ~13 more OHOS NDK libs added to NEEDED
-    (libhitrace_ndk, libpasteboard_ndk, libbegetutil, libcrypto/boringssl, ace_ndk...).
-- NOTE: standalone `dltest` is stricter than reality — the real load is by the framework
-  INSIDE an appspawn-x-forked app process, where the OHOS runtime + libart are already up
-  and the full linker namespace resolves everything. That's the real integration test.
-
-## Next (the real integration)
-Deploy libart(22M)+framework(fw/)+appspawn-x+bridge → get appspawn-x running with the
-framework preload → framework loads the bridge in-process (real namespace) → app
-registration (.app→.apk + bm install 6.1 BMS + entry.hap) → aa start → fork → UI.
+## Read
+The whole runtime chain WORKS on the board: appspawn-x → VM → framework preload → bridge
+in-process load (OHOS+VM syms resolved). The ONLY remaining gap is the AOSP native support
+libs (androidfw/base/utils/binder for assets; hwui/skia for render), which need an arm64
+build (recipe exists). ART TOLERATES the bridge clinit failure so appspawn-x stays up.
+Next: arm64 build of the aosp_lib stack → bridge fully loads → app reg + aa start → UI.
