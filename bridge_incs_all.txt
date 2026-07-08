@@ -9,3 +9,7 @@
  -I/home/dspfac/ohos-sdk-6.1/linux/native/sysroot/usr/include/database/pasteboard
  -I/home/dspfac/aosp-android-11/external/boringssl/src/include
  -I/home/dspfac/aosp-android-11/frameworks/native/libs/arect/include
+ -I/home/dspfac/ohos-6.1-src/foundation/bundlemanager/bundle_framework/interfaces/inner_api/appexecfwk_base/include/clone
+ -I/home/dspfac/ohos-6.1-src/foundation/bundlemanager/bundle_framework/interfaces/inner_api/appexecfwk_base/include/quick_fix
+
+ -I/home/dspfac/bridge-build-arm64/stubinc

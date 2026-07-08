@@ -1,33 +1,38 @@
-# liboh_adapter_bridge.so arm64/OHOS-6.1 port — status (2026-07-08)
+# liboh_adapter_bridge.so arm64/OHOS-6.1 — 74/90 compiled + LINKED (2026-07-08)
 
-Bridge = 90 .cpp / ~37K LOC. Compile vs OHOS 6.1 SDK arm64 + synced 6.1 inner-API
-headers + AOSP-11 frameworks/base: **59 / 90 CLEAN** (was 50; +skia+relational_store+
-image_framework repos, skcms symlink, corrected includes). Recipe: bridge_incs_all.txt
-+ CF flags: -include signal.h/sys/stat.h/log/log.h -Wno-narrowing -Wno-c++11-narrowing.
+Bridge = 90 .cpp. **74/90 compile clean → LINKED** to a valid aarch64 .so (1.69MB,
+87 JNI exports). Recipe: bridge_incs_all.txt + overlay (bridge-overlay/{inc,cpp}) +
+shims (bridge-stubinc/). CF: -include signal.h sys/stat.h log/log.h pkcs7_stub.h
+aosp_bridge_compat.h; per-skia-file +skopts_hash_compat.h; -Wno-narrowing.
 
-## Remaining 31 = header-path (16) + genuine drift (15)
+## Fixes applied (70→74 + the earlier 50→70)
+- 6.1 IPC override drift: app_scheduler_adapter.h (drop isShellCall) fixed 7 files;
+  session_stage_adapter.h (drop needUpdateViewport) — partial.
+- skia m133: SkOpts::hash → SkChecksum::Hash32 shim (skopts_hash_compat.h, 4 render
+  files); SkTypeface::MakeFromStream → nullptr stub (oh_typeface_init; TODO SkFontMgr).
+- boringssl: PKCS7_verify → macro=1 (flags were NOVERIFY|NOSIGS; pkcs7_stub.h).
+- ToolType → int32_t (aosp_bridge_compat.h). + many header paths + stubs (OS.h,
+  ResourceTimer.h, zlib prefix).
 
-### Header-path (16) — add paths / create symlinks (mechanical)
-- impl_interface/{data_impl,matrix44_impl}.h (4): graphic_2d 2d_graphics impl_interface subpath.
-- sync_fence.h (2): graphic_surface — files include "sync_fence.h" bare; add its exact dir.
-- third_party/zlib/zlib.h (3): add a root where third_party/zlib/ resolves (skia has a copy, or symlink).
-- android/hardware_buffer.h (1): NDK header (SDK sysroot).
-- ResourceTimer.h, app_quick_fix.h, BpBinder.h, clone_param.h, dynamic_cache.h (5): OHOS/AOSP subpaths.
-
-### Genuine 6.1 / AOSP API drift (15) — per-file source patches (overlay)
-| file(s) | issue | fix direction |
+## Remaining 16 = AOSP-version gap (asset/input/bundle subsystem) + few overrides/paths
+The adapter's *_aosp.cpp files use NEWER-AOSP APIs than aosp-android-11 provides:
+| file | issue | note |
 |---|---|---|
-| activity_manager_adapter, adapter_bridge×2, app_scheduler_adapter, oh_callback_handler, oh_environment | `override hides virtual` | **6.1 IPC interface signature drift** — update the override method sig to match the 6.1 inner_api interface (e.g. IAppScheduler::ScheduleMemoryLevel). The core drift set. |
-| android_util_StringBlock/XmlBlock | `registerNativeMethods` missing in AndroidRuntime | adapter AndroidRuntime API — use the right registration call |
-| oh_typeface_init | `SkTypeface::MakeFromStream` gone | skia m133 API — use SkFontMgr::makeFromStream |
-| android_view_MotionEvent | `ToolType` unknown | AOSP input enum — qualify/def |
-| android_input_InputEventLabels | `InputEventLookup` (was InputEventLabel) | AOSP rename — adapt source |
-| android_content_res_ApkAssets | `Guarded<unique_ptr>` ctor | AOSP template |
-| android_view_KeyCharacterMap, android_input_Input | redefinition (AndroidRuntime/clear) | header double-include guard |
-| window_callback_adapter | `OccupiedAreaChangeInfo` | +#include occupied_area_change_info.h |
+| android_content_res_ApkAssets | `Guarded<>` ctor | newer androidfw |
+| android_util_AssetManager | `AssetManager2::SelectedValue` | newer androidfw |
+| android_util_StringBlock/XmlBlock | `AndroidRuntime::registerNativeMethods` | adapter API |
+| android_view_MotionEvent | `PointerCoords::isResampled` | newer AOSP input |
+| android_view_KeyCharacterMap, android_input_Input | redefinition (AndroidRuntime/clear) | header/aosp clash |
+| android_input_InputEventLabels | `InputEventLookup` (hdr declares InputEventLabel) | hdr/src mismatch |
+| Parcel_aosp_native | `binder/OS.h` | newer AOSP binder |
+| oh_bundle_mgr_client, apk_bundle_parser, oh_app_mgr_client | clone_param/app_quick_fix path + override | bundle |
+| window_callback_adapter, oh_window_manager_client, session_stage_adapter | OccupiedAreaChangeInfo namespace + override | window session |
+| oh_egl_surface_adapter, oh_skia_ahb_shim | GLES/EGL headers | graphics NDK |
 
 ## Read
-Bridge is ~66% clean, remaining fully catalogued. The 6 `override hides virtual`
-files are the real 6.1 IPC drift (interface sigs changed); the rest are paths +
-mechanical AOSP/skia adaptations. Next: finish header paths → patch the 15 drift
-files (overlay) → link liboh_adapter_bridge.so → app registration → aa start → UI.
+Bridge 82% compiled + LINKED. Remaining 16 are a bounded AOSP-version-adaptation
+sub-effort (the *_aosp.cpp asset/input files target a newer AOSP than aosp-11) +
+a couple window-session overrides + graphics-NDK header setup. The linked .so has
+the core (activity/window/surface/binder/AMS) — the asset/input parsing + some
+graphics files are the gap. Next: adapt the *_aosp.cpp to aosp-11 (or sync newer
+androidfw) → full link → deploy → app registration → aa start → UI.
