@@ -1,38 +1,34 @@
-# liboh_adapter_bridge.so arm64/OHOS-6.1 — 74/90 compiled + LINKED (2026-07-08)
+# liboh_adapter_bridge.so arm64/OHOS-6.1 — 83/90 compiled + LINKED (2026-07-08)
 
-Bridge = 90 .cpp. **74/90 compile clean → LINKED** to a valid aarch64 .so (1.69MB,
-87 JNI exports). Recipe: bridge_incs_all.txt + overlay (bridge-overlay/{inc,cpp}) +
-shims (bridge-stubinc/). CF: -include signal.h sys/stat.h log/log.h pkcs7_stub.h
-aosp_bridge_compat.h; per-skia-file +skopts_hash_compat.h; -Wno-narrowing.
+**83/90 compile clean → LINKED** to a valid aarch64 .so (2.1MB, 150 JNI exports).
+Build: `build_bridge_arm64.sh` (recipe bridge_incs_all.txt + overlay + shims).
 
-## Fixes applied (70→74 + the earlier 50→70)
-- 6.1 IPC override drift: app_scheduler_adapter.h (drop isShellCall) fixed 7 files;
-  session_stage_adapter.h (drop needUpdateViewport) — partial.
-- skia m133: SkOpts::hash → SkChecksum::Hash32 shim (skopts_hash_compat.h, 4 render
-  files); SkTypeface::MakeFromStream → nullptr stub (oh_typeface_init; TODO SkFontMgr).
-- boringssl: PKCS7_verify → macro=1 (flags were NOVERIFY|NOSIGS; pkcs7_stub.h).
-- ToolType → int32_t (aosp_bridge_compat.h). + many header paths + stubs (OS.h,
-  ResourceTimer.h, zlib prefix).
+## The breakthrough: correct AOSP tree
+The "AOSP-version gap" was using the wrong AOSP. The adapter bundles its OWN newer
+AOSP at **/home/dspfac/bridge-build/aosp** (585M — has AssetManager2::SelectedValue,
+PointerCoords::isResampled, InputEventLookup, real JNIPlatformHelp.h + binder/OS.h,
+math/, GLES/). Using it (AOSP=bridge-build/aosp) + the adapter's own
+android-runtime/src on the include path fixed the whole asset/input/AndroidRuntime
+cluster. 59→83.
 
-## Remaining 16 = AOSP-version gap (asset/input/bundle subsystem) + few overrides/paths
-The adapter's *_aosp.cpp files use NEWER-AOSP APIs than aosp-android-11 provides:
+## Fixes (all preserve arm32 via #if defined(__aarch64__) guards or per-file shims)
+- 6.1 IPC override drift: app_scheduler_adapter.h (drop isShellCall) + session_stage_
+  adapter.h (drop needUpdateViewport + 4 methods 6.1's ISessionStage lacks) — guarded.
+- skia m133: SkOpts::hash→SkChecksum::Hash32 shim; SkTypeface::MakeFromStream→nullptr.
+- boringssl PKCS7_verify→1 (NOVERIFY|NOSIGS anyway). ToolType, GLES stubs.
+- correct AOSP tree + adapter android_runtime path first (AndroidRuntime collision).
+
+## Remaining 7 — the AOSP/OHOS version-nuance tail (NONE block first render)
 | file | issue | note |
 |---|---|---|
-| android_content_res_ApkAssets | `Guarded<>` ctor | newer androidfw |
-| android_util_AssetManager | `AssetManager2::SelectedValue` | newer androidfw |
-| android_util_StringBlock/XmlBlock | `AndroidRuntime::registerNativeMethods` | adapter API |
-| android_view_MotionEvent | `PointerCoords::isResampled` | newer AOSP input |
-| android_view_KeyCharacterMap, android_input_Input | redefinition (AndroidRuntime/clear) | header/aosp clash |
-| android_input_InputEventLabels | `InputEventLookup` (hdr declares InputEventLabel) | hdr/src mismatch |
-| Parcel_aosp_native | `binder/OS.h` | newer AOSP binder |
-| oh_bundle_mgr_client, apk_bundle_parser, oh_app_mgr_client | clone_param/app_quick_fix path + override | bundle |
-| window_callback_adapter, oh_window_manager_client, session_stage_adapter | OccupiedAreaChangeInfo namespace + override | window session |
-| oh_egl_surface_adapter, oh_skia_ahb_shim | GLES/EGL headers | graphics NDK |
+| android_input_Input, android_view_MotionEvent | duplicate AOSP native input vs newer Input.h | **touch input — NOT needed for first render** |
+| android_util_AssetManager | `GetResourceValue` nuance (l.649) | 1 method vs bundled-AOSP |
+| window_callback_adapter | OccupiedAreaChangeInfo via OHOS 6.1 window zidl | window resize callback |
+| oh_skia_ahb_shim | GLES/skia AHardwareBuffer types | graphics buffer shim |
+| oh_bundle_mgr_client, apk_bundle_parser | extend_resource_manager path + BundleType::APP_ANDROID (6.1 enum lacks it) | bundle parse |
 
 ## Read
-Bridge 82% compiled + LINKED. Remaining 16 are a bounded AOSP-version-adaptation
-sub-effort (the *_aosp.cpp asset/input files target a newer AOSP than aosp-11) +
-a couple window-session overrides + graphics-NDK header setup. The linked .so has
-the core (activity/window/surface/binder/AMS) — the asset/input parsing + some
-graphics files are the gap. Next: adapt the *_aosp.cpp to aosp-11 (or sync newer
-androidfw) → full link → deploy → app registration → aa start → UI.
+Bridge **92% compiled + LINKED** (150 JNI exports), core subsystems in — activity/
+window/surface/binder/AMS/asset(mostly)/graphics. Remaining 7 are per-file version
+nuances (2 are input, not needed to render). Next: deploy bridge+framework+appspawn-x
+→ app registration (.app→.apk + bm install 6.1) → aa start → runtime integration.
