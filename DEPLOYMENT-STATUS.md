@@ -172,3 +172,24 @@ Next: capture the real backtrace (crash-log tooling is unreliable — faultlog p
 stale crashes; need a debugger/ptrace or faultloggerd hook), then per-board-lib bisect,
 OR change WHEN board libs load (before VM creation), OR the ART LoadNativeLibrary
 namespace path on OHOS.
+
+## 🎯 RESOLVED: bridge LOADS in-process (2026-07-08)
+"Get a real backtrace" → used the WORKING appspawn-x backup (out/appspawn-x-full.WORKING,
+has -Xverify:none + /data/local/tmp/asx/fw classpath) instead of my session rebuilds
+(which were BROKEN: src-tree main.cpp hardcodes /system/android/framework = empty boot
+classpath → VM -1; and lacks the -Xverify:none fix → Runtime.initLibPaths VerifyError).
+Those broke the VM BEFORE the bridge load — ALL my "board-lib ctor crash" investigations
+were confounded by them.
+
+With the WORKING appspawn-x + the MERGED bridge: **the bridge loads, framework preload
+completes, appspawn-x reaches "Ready to accept spawn requests" + Entering event loop,
+ALIVE.** asx.err: Runtime_nativeLoad(bridge) → moves past to Runtime_nativeLoad(libmedia_
+jni) → Preload completed successfully → [B35.A] RegisterNatives OK. ZERO bridge clinit
+failure (OHEnvironment loads clean), zero relocation errors. Reproducible.
+
+Fix = MERGED bridge (90 aosp .o statically linked in + -Bsymbolic → no libbase/liblog
+interposition with libart) + skia-codec-skip (JNI_OnLoad's RegisterAllSkiaCodecs hit
+stubbed skia → arch-guarded off). Working combo: out/appspawn-x-full.WORKING +
+out/liboh_adapter_bridge.so.INPROC_LOADS.
+
+NEXT: aa start / spawn request to /dev/unix/socket/AppSpawnX → fork app → UI.
