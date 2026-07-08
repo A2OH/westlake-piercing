@@ -143,3 +143,32 @@ Bridge LOADS standalone (dltest LOADED OK, 0-undefined, out/liboh_adapter_bridge
 appspawn-x in-process load crashes in a NEEDED-lib constructor (ART-context specific,
 isolated via trace bisection). One deeper debugging pass (per-lib ctor bisection or
 namespace isolation) from the in-process load → aa start → UI.
+
+## Namespace-isolation attempt + refined diagnosis (2026-07-08)
+Tried namespace isolation via STATIC-MERGE: linked the 90 aosp .o (libbase/liblog/
+libutils/libcutils/libziparchive/libandroidfw) directly INTO the bridge + -Bsymbolic
+(so its internal libbase binds locally, not to libart's exports) + excluded the aosp
+.so from NEEDED. Bridge is now self-contained (3.14MB, out/*.MERGED), loads standalone
+(dltest LOADED OK). **Did NOT fix the appspawn-x crash.**
+
+★DEFINITIVE crash-phase bisection (file-based trace — fd 2 is redirected by ART's
+logger so use open()/write() to /data/local/tmp/asx/btrace.log):
+- dltest: "[TRACE] ctor START/END" written + LOADED OK.
+- appspawn-x: **btrace.log EMPTY** → crash is BEFORE any bridge constructor (the
+  priority-101 START ctor never runs) = during RELOCATION or a NEEDED OHOS-board-lib
+  constructor. JNI_OnLoad also never reached (it's after dlopen).
+- Also found + arch-guarded (skia stubbed) the JNI_OnLoad `RegisterAllSkiaCodecs()`
+  call — a real latent crash (stubs return garbage) for when JNI_OnLoad IS reached.
+
+★ROOT DIFFERENCE dltest vs appspawn-x: both load libart (bridge NEEDs it), but
+appspawn-x loads libart FIRST + creates a LIVE VM before loading the bridge; dltest
+loads libart fresh (no VM). So a NEEDED board-lib ctor (or a bridge relocation)
+behaves differently when libart is pre-loaded with a running VM. The appspawn-x code
+already notes "preloadSharedLibraries skipped (musl dlopen SEGV workaround)" = same
+class. Static-merge doesn't help because the crashing ctor is an OHOS BOARD lib (libwm/
+libmmi/librender/libace...), not my aosp libs (now internal).
+
+Next: capture the real backtrace (crash-log tooling is unreliable — faultlog protected,
+stale crashes; need a debugger/ptrace or faultloggerd hook), then per-board-lib bisect,
+OR change WHEN board libs load (before VM creation), OR the ART LoadNativeLibrary
+namespace path on OHOS.
