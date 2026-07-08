@@ -215,7 +215,7 @@ OHOS::Rosen::WMError WindowCallbackAdapter::UpdateAvoidArea(
 }
 
 OHOS::Rosen::WMError WindowCallbackAdapter::UpdateOccupiedAreaChangeInfo(
-    const OHOS::sptr<OHOS::Rosen::OccupiedAreaChangeInfo>& info,
+    const OHOS::sptr<OHOS::Rosen::OHOS::Rosen::OccupiedAreaChangeInfo>& info,
     const std::map<OHOS::Rosen::AvoidAreaType, OHOS::Rosen::AvoidArea>& /*avoidAreas*/,
     const std::shared_ptr<OHOS::Rosen::RSTransaction>& /*rsTransaction*/)
 {
@@ -234,7 +234,7 @@ OHOS::Rosen::WMError WindowCallbackAdapter::UpdateOccupiedAreaChangeInfo(
 }
 
 OHOS::Rosen::WMError WindowCallbackAdapter::UpdateOccupiedAreaAndRect(
-    const OHOS::sptr<OHOS::Rosen::OccupiedAreaChangeInfo>& /*info*/,
+    const OHOS::sptr<OHOS::Rosen::OHOS::Rosen::OccupiedAreaChangeInfo>& /*info*/,
     const OHOS::Rosen::Rect& /*rect*/,
     const std::map<OHOS::Rosen::AvoidAreaType, OHOS::Rosen::AvoidArea>& /*avoidAreas*/,
     const std::shared_ptr<OHOS::Rosen::RSTransaction>& /*rsTransaction*/)
