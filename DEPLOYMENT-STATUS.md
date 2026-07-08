@@ -115,3 +115,31 @@ by preloading libc++_shared+libart in dltest, or bisect the constructors.
 Symbol mapping COMPLETE (0 undefined, loads standalone). The whole stack — ART,
 appspawn-x, framework, AOSP support libs, 51 OHOS NEEDED — resolves. One
 constructor-in-ART-context crash from the full in-process load → aa start → UI.
+
+## Constructor bisection (2026-07-08): crash is a NEEDED-lib constructor
+Used a bridge-level trace (a separate zz_ctor_trace.cpp with __attribute__((constructor(101)))
+START + (65534) END, no existing-code changes). In appspawn-x's ART Runtime_nativeLoad:
+**NEITHER trace prints** → the crash is in a NEEDED-lib constructor (which run bottom-up,
+BEFORE the bridge's own constructors), not a bridge constructor (all bridge ctors run fine
+in dltest — START+END+LOADED). ★Broad per-file instrumentation is unsafe (recompiling a
+file can drop a method → new undefined → musl chokes); use the single separate trace file.
+
+Tested the interposition theory: libart EXPORTS 90 android::base + __android_log_print +
+SetLogger, and my libbase.so/liblog.so also define them (with constructors) → suspected
+duplicate-libbase interposition. FIX ATTEMPT (drop my libbase/liblog, resolve from libart):
+did NOT fix the appspawn-x crash AND broke the standalone load (dltest has no libart) →
+REVERTED. So the crashing NEEDED-lib constructor is likely one of libutils/libcutils/
+libziparchive/libandroidfw (my android-15 libs) calling libart's slightly-different bundled
+libbase, OR an OHOS board lib's ctor behaving differently in the non-standard appspawn-x
+process. Not yet pinned.
+
+Next: per-NEEDED-lib bisection in the ART context (drop libs one at a time / stub their
+ctors), or load the bridge in an ISOLATED linker namespace (RTLD_LOCAL / android namespace)
+so my libs don't interpose with libart's bundled libbase. The appspawn-x code already notes
+a "musl dlopen SEGV workaround" (preloadSharedLibraries skipped) — same class of issue.
+
+## Net (this session)
+Bridge LOADS standalone (dltest LOADED OK, 0-undefined, out/liboh_adapter_bridge.so.LOADS).
+appspawn-x in-process load crashes in a NEEDED-lib constructor (ART-context specific,
+isolated via trace bisection). One deeper debugging pass (per-lib ctor bisection or
+namespace isolation) from the in-process load → aa start → UI.
