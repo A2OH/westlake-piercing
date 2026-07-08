@@ -87,3 +87,31 @@ add to NEEDED) + expand skia stub → bridge loads fully in-process → aa start
 The AOSP support-lib blocker is SOLVED (built for arm64, load on board). The bridge
 is one lib-mapping pass from loading. Everything else (appspawn-x, framework, __h ABI,
 libart NEEDED) already works.
+
+## ✅ Symbol mapping DONE — bridge links ZERO-UNDEFINED + LOADS standalone (2026-07-08)
+Built a symbol→lib index by bulk-pulling the board's SDK lib dirs (platformsdk 761 +
+chipset-sdk-sp 60 + chipset-sdk 47 + ndk 116) and nm-ing on host (263k syms). Mapped
+all 198 undefined: **115 resolve to real board libs** (the earlier "unmapped" was a
+host-analysis artifact — undefined `SYM@1.0` vs defined `SYM@@1.0`; strip the version
+tag to match). Added libwmutil/libwmutil_base/libcrypto_openssl/libEGL to NEEDED (51
+total). The rest = skia codecs (not on board) + OHOS typeinfo (hidden visibility) →
+complete no-op stub libbridge_compat.so (skia+misc funcs as functions, _ZTI/_ZTV as
+data). ★Stub MUST be compiled as C (clang -x c), not C++ — clang++ re-mangles the
+_ZN.. names. Iterate the strict `--no-undefined -Wl,--no-demangle` link to get the
+exact mangled unresolved set. Result: **bridge links with 0 undefined** and **dlopens
+on the board (dltest LOADED OK)** after neutralizing the fragile InstallHiLogBridge
+constructor (android::base::SetLogger at load, libbase state not ready). Binary:
+out/liboh_adapter_bridge.so.LOADS.
+
+## Remaining: bridge crashes in appspawn-x's ART Runtime_nativeLoad (not in dltest)
+The bridge loads standalone but crashes when ART loads it in-process. It's a
+constructor-in-ART-context issue (interposition with libart's bundled libbase, or a
+static-init using the live JavaVM). The bridge has ~19 files with C++ global
+constructors (adapter_bridge, oh_ability_manager_client, android_log_hilog_bridge,
+oh_input_bridge, ...). Next: neutralize/guard the crashing constructor(s) — reproduce
+by preloading libc++_shared+libart in dltest, or bisect the constructors.
+
+## Net
+Symbol mapping COMPLETE (0 undefined, loads standalone). The whole stack — ART,
+appspawn-x, framework, AOSP support libs, 51 OHOS NEEDED — resolves. One
+constructor-in-ART-context crash from the full in-process load → aa start → UI.
