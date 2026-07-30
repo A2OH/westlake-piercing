@@ -13,6 +13,9 @@
 // ============================================================================
 
 #include <atomic>
+#include <map>
+#include <set>
+#include <unistd.h>
 #include "AndroidRuntime.h"
 
 #include <cstdio>
@@ -2119,6 +2122,84 @@ struct WlCnvApi {
 };
 static WlCnvApi g_cnv;
 
+// §470: the child SIGSEGVs inside ucnv_fromUnicode_66 at addr=0x5c. Root cause, from the ordering in
+// the zygote log: libart's own icu_jni stub registers com.android.icu.charset.NativeConverter FIRST
+// (its JNI_OnLoad, log line ~337) and we re-register the same class much later (~2131). Anything that
+// opens a charset in between gets a handle from the STUB's openConverter -- which returns a fake
+// handle, `index + 1` into its private CHARSETS table, i.e. the integer 1. That value is cached inside
+// the Java Charset/CharsetEncoder, so once our real encode() takes over it is handed 0x1 and passes it
+// straight to ICU as a UConverter* -> deref at a tiny address -> SIGSEGV at 0x5c.
+//
+// RegisterNatives is last-wins per method, so we cannot rely on winning the race. Instead we ADOPT the
+// stub's handles: its table is fixed and libart is a non-rebuildable binary here, so index->charset is
+// stable. A foreign small-integer handle is mapped to the charset it denotes and backed by a real ICU
+// converter, opened once and cached. ★A standalone probe (native-tools/wlicu.c) proved real converters
+// stay valid across fork, so genuine pointers -- including ones the parent opened pre-fork -- are
+// simply accepted; do NOT invalidate on pid change.
+static pthread_mutex_t g_cnv_lk = PTHREAD_MUTEX_INITIALIZER;
+static std::set<uintptr_t> g_cnv_live;      // handles WL_Cnv_open issued
+static std::map<uintptr_t, void*> g_cnv_stub;  // libart fake handle -> real converter we opened for it
+
+// libart/stubs/icu_jni_stub.c CHARSETS[], in order. Handle value is (index + 1).
+static const char* const kStubCharsets[] = {
+    "UTF-8", "US-ASCII", "ISO-8859-1", "UTF-16", "UTF-16BE", "UTF-16LE",
+    "UTF-32", "UTF-32BE", "UTF-32LE",
+};
+static const size_t kStubCharsetCount = sizeof(kStubCharsets) / sizeof(kStubCharsets[0]);
+
+// Anything at or above this is a real mapped address on this target; below it can only be a fake
+// handle. Real ICU converters live on the heap, far above the first page.
+static const uintptr_t kMinRealPointer = 0x10000;
+
+static void wl_cnv_track(void* c) {
+    pthread_mutex_lock(&g_cnv_lk);
+    g_cnv_live.insert((uintptr_t)c);
+    pthread_mutex_unlock(&g_cnv_lk);
+}
+static void wl_cnv_untrack(void* c) {
+    pthread_mutex_lock(&g_cnv_lk);
+    g_cnv_live.erase((uintptr_t)c);
+    pthread_mutex_unlock(&g_cnv_lk);
+}
+
+// Turn whatever Java handed us into a usable UConverter*, or nullptr if it cannot be resolved.
+static void* wl_cnv_resolve(jlong h, const char* who) {
+    const uintptr_t v = (uintptr_t)h;
+    if (v == 0 || !g_cnv.ok) return nullptr;
+    if (v >= kMinRealPointer) return (void*)v;      // a real converter (ours, or inherited pre-fork)
+
+    if (v > kStubCharsetCount) {
+        fprintf(stderr, "[WESTLAKE-470] %s: handle %p is neither a pointer nor a known stub handle\n",
+                who, (void*)v);
+        fflush(stderr);
+        return nullptr;
+    }
+    pthread_mutex_lock(&g_cnv_lk);
+    auto it = g_cnv_stub.find(v);
+    if (it != g_cnv_stub.end()) { void* c = it->second; pthread_mutex_unlock(&g_cnv_lk); return c; }
+    pthread_mutex_unlock(&g_cnv_lk);
+
+    const char* name = kStubCharsets[v - 1];
+    int st = 0;
+    void* real = g_cnv.open(name, &st);
+    if (real == nullptr || st > 0) {
+        fprintf(stderr, "[WESTLAKE-470] %s: cannot back stub handle %p (%s) st=%d\n",
+                who, (void*)v, name, st);
+        fflush(stderr);
+        return nullptr;
+    }
+    pthread_mutex_lock(&g_cnv_lk);
+    auto ins = g_cnv_stub.emplace(v, real);
+    void* winner = ins.first->second;
+    bool we_won = ins.second;
+    pthread_mutex_unlock(&g_cnv_lk);
+    if (!we_won) { g_cnv.close(real); return winner; }   // lost a race; keep the first one
+    fprintf(stderr, "[WESTLAKE-470] adopted libart stub handle %p as %s -> real converter %p\n",
+            (void*)v, name, real);
+    fflush(stderr);
+    return winner;
+}
+
 static void* wl_cnv_sym(void* h, const char* base) {
     static const char* kSuffix[] = { "", "_66", "_74", "_72", "_70", nullptr };
     char buf[128];
@@ -2173,17 +2254,24 @@ static jlong WL_Cnv_open(JNIEnv* env, jclass, jstring jname) {
         env->ReleaseStringUTFChars(jname, name);
         return 0;
     }
+    fprintf(stderr, "[WESTLAKE-470] ucnv_open(%s) -> %p pid=%d\n", name, c, (int)getpid());
+    fflush(stderr);
     env->ReleaseStringUTFChars(jname, name);
+    wl_cnv_track(c);
     return (jlong)(uintptr_t)c;
 }
 
-static void WL_Cnv_close(JNIEnv*, jclass, jlong h) { wl_cnv_free((void*)(uintptr_t)h); }
+static void WL_Cnv_close(JNIEnv*, jclass, jlong h) {
+    wl_cnv_untrack((void*)(uintptr_t)h); wl_cnv_free((void*)(uintptr_t)h);
+}
 
 // decode(long, byte[] in, int inEnd, char[] out, int outEnd, int[] data, boolean flush)
 static jint WL_Cnv_decode(JNIEnv* env, jclass, jlong h, jbyteArray in, jint inEnd,
                           jcharArray out, jint outEnd, jintArray data, jboolean flush) {
     void* cnv = (void*)(uintptr_t)h;
     if (cnv == nullptr || !g_cnv.ok) return 1;   // CoderResult error
+    cnv = wl_cnv_resolve(h, "decode");
+    if (cnv == nullptr) return 1;
     jbyte* src = env->GetByteArrayElements(in, nullptr);
     jchar* dst = env->GetCharArrayElements(out, nullptr);
     jint*  d   = env->GetIntArrayElements(data, nullptr);
@@ -2214,6 +2302,8 @@ static jint WL_Cnv_encode(JNIEnv* env, jclass, jlong h, jcharArray in, jint inEn
                           jbyteArray out, jint outEnd, jintArray data, jboolean flush) {
     void* cnv = (void*)(uintptr_t)h;
     if (cnv == nullptr || !g_cnv.ok) return 1;
+    cnv = wl_cnv_resolve(h, "encode");
+    if (cnv == nullptr) return 1;
     jchar* src = env->GetCharArrayElements(in, nullptr);
     jbyte* dst = env->GetByteArrayElements(out, nullptr);
     jint*  d   = env->GetIntArrayElements(data, nullptr);
@@ -2238,22 +2328,23 @@ static jint WL_Cnv_encode(JNIEnv* env, jclass, jlong h, jcharArray in, jint inEn
 }
 
 static jint  WL_Cnv_maxBytes(JNIEnv*, jclass, jlong h) {
-    void* c=(void*)(uintptr_t)h; return (c && g_cnv.ok) ? (jint)g_cnv.getMaxCharSize(c) : 1;
+    void* c=(void*)(uintptr_t)h; return ((c = wl_cnv_resolve(h,"maxBytes")) != nullptr) ? (jint)g_cnv.getMaxCharSize(c) : 1;
 }
 static jfloat WL_Cnv_aveBytes(JNIEnv*, jclass, jlong h) {
-    void* c=(void*)(uintptr_t)h; return (c && g_cnv.ok) ? (jfloat)g_cnv.getMaxCharSize(c) : 1.0f;
+    void* c=(void*)(uintptr_t)h; return ((c = wl_cnv_resolve(h,"aveBytes")) != nullptr) ? (jfloat)g_cnv.getMaxCharSize(c) : 1.0f;
 }
 static jfloat WL_Cnv_aveChars(JNIEnv*, jclass, jlong h) {
     void* c=(void*)(uintptr_t)h;
-    if (!c || !g_cnv.ok) return 1.0f;
+    c = wl_cnv_resolve(h, "aveChars");
+    if (!c) return 1.0f;
     const int8_t mn = g_cnv.getMinCharSize(c);
     return (mn > 0) ? (1.0f / (jfloat)mn) : 1.0f;
 }
 static void WL_Cnv_resetToUni(JNIEnv*, jclass, jlong h) {
-    void* c=(void*)(uintptr_t)h; if (c && g_cnv.ok) g_cnv.resetToUnicode(c);
+    void* c=(void*)(uintptr_t)h; if ((c = wl_cnv_resolve(h,"resetToUni")) != nullptr) g_cnv.resetToUnicode(c);
 }
 static void WL_Cnv_resetFromUni(JNIEnv*, jclass, jlong h) {
-    void* c=(void*)(uintptr_t)h; if (c && g_cnv.ok) g_cnv.resetFromUnicode(c);
+    void* c=(void*)(uintptr_t)h; if ((c = wl_cnv_resolve(h,"resetFromUni")) != nullptr) g_cnv.resetFromUnicode(c);
 }
 static jbyteArray WL_Cnv_substBytes(JNIEnv* env, jclass, jlong) {
     jbyteArray a = env->NewByteArray(1);
