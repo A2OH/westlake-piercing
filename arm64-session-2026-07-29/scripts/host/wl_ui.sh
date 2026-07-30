@@ -4,9 +4,9 @@
 #   wl_ui.sh tap <x> <y>      inject a tap through the bridge side-channel
 #   wl_ui.sh awake            keep the panel on
 #   wl_ui.sh alive            child/ability/swap status
-HDC="/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe"
-SHOTS=/tmp/claude-1000/-home-dspfac-openharmony/9adf5c05-1946-4e31-a77a-b6e8688c50b6/scratchpad/shots
-WIN=/mnt/c/Users/dspfa/Dev/wlstage
+HDC="$WIN_DEV_ROOT/ohos-tools/hdc.exe"
+SHOTS=$WL_OUT/shots
+WIN=$WIN_DEV_ROOT/wlstage
 case "$1" in
   awake) $HDC shell "power-shell timeout -o 3600000 >/dev/null 2>&1; power-shell wakeup >/dev/null 2>&1" >/dev/null 2>&1 ;;
   tap)   $HDC shell "echo '$2 $3' > /data/local/tmp/noice_tap" >/dev/null 2>&1; echo "tap $2 $3" ;;

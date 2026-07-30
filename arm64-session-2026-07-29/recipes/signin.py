@@ -6,10 +6,14 @@ registers only EntryAbility, so `aa start ... SignInLinkHandlerActivity` fails. 
 
 ★The credential exchange needs header `X-Refresh-Token`. `Authorization: Bearer` returns 400.
 """
-import json, random, string, subprocess, sys, time, urllib.error, urllib.request
+import json, os, random, re, string, subprocess, sys, time, urllib.error, urllib.request
 
-HDC = "/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe"
-WIN_STAGE = r"C:\Users\dspfa\Dev\wl"
+# Paths come from recipes/env.sh (shell vars do NOT expand inside a python string literal).
+# Run this as:  . recipes/env.sh && python3 recipes/signin.py
+HDC = os.environ.get("HDC") or sys.exit("run `. recipes/env.sh` first (HDC unset)")
+WSL_STAGE = os.environ.get("WIN_STAGE") or sys.exit("run `. recipes/env.sh` first (WIN_STAGE unset)")
+WIN_STAGE = subprocess.run(["wslpath", "-w", WSL_STAGE],
+                           capture_output=True, text=True).stdout.strip()
 APPDIR = "/data/app/el2/100/base/com.github.ashutoshgngwr.noice"
 UA = "Noice/2.5.1 (Android 14; OpenHarmony) OkHttp/4.10.0"
 
@@ -84,7 +88,8 @@ def main():
     open("/tmp/credentials.xml", "w").write(xml)
     subprocess.run([HDC, "shell", "pkill -9 -f run406.sh; pkill -9 appspawn-x; "
                     "aa force-stop com.github.ashutoshgngwr.noice"], capture_output=True)
-    subprocess.run(["cp", "/tmp/credentials.xml", "/mnt/c/Users/dspfa/Dev/wl/credentials.xml"])
+    os.makedirs(WSL_STAGE, exist_ok=True)
+    subprocess.run(["cp", "/tmp/credentials.xml", WSL_STAGE + "/credentials.xml"])
     subprocess.run([HDC, "file", "send", WIN_STAGE + r"\credentials.xml",
                     "/data/local/tmp/credentials.xml"], capture_output=True)
     subprocess.run([HDC, "shell",

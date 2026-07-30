@@ -1,0 +1,165 @@
+/**
+ * appspawn-x main entry point.
+ *
+ * This is the hybrid spawner daemon that combines OH appspawn's security
+ * and sandbox capabilities with Android Zygote's ART runtime preloading.
+ *
+ * Startup sequence:
+ *   Phase 1: Initialize OH security modules (sandbox config, SELinux, AccessToken)
+ *   Phase 2: Create ART VM and register JNI methods
+ *   Phase 3: Preload Android framework classes and resources
+ *   Phase 4: Enter event loop, accept spawn requests, fork child processes
+ *
+ * Each child process:
+ *   - Inherits the preloaded ART VM (copy-on-write via fork)
+ *   - Applies OH security restrictions (DAC, sandbox, SELinux, AccessToken)
+ *   - Initializes the Android-OH adapter layer
+ *   - Enters ActivityThread.main() event loop
+ *
+ * Usage:
+ *   appspawn-x [--socket-name NAME] [--sandbox-config PATH]
+ */
+
+#include "appspawnx_runtime.h"
+#include "child_main.h"
+#include "spawn_server.h"
+
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <signal.h>
+#include <sys/resource.h>
+#include <unistd.h>
+
+using namespace appspawnx;
+
+static const char* kDefaultSocketName = "AppSpawnX";
+static const char* kDefaultSandboxConfig = "/system/etc/appspawn_x_sandbox.json";
+
+int main(int argc, char* argv[]) {
+    // Ensure 16MB stack for ART ClassLinker::Init (DEX parsing is deeply recursive)
+    struct rlimit rl;
+    rl.rlim_cur = 16 * 1024 * 1024;
+    rl.rlim_max = 16 * 1024 * 1024;
+    setrlimit(RLIMIT_STACK, &rl);
+
+    LOGI("========================================");
+    LOGI("appspawn-x hybrid spawner starting");
+    LOGI("  pid=%d  uid=%d  gid=%d", getpid(), getuid(), getgid());
+    LOGI("========================================");
+
+    // Parse command line arguments
+    const char* socketName = kDefaultSocketName;
+    const char* sandboxConfig = kDefaultSandboxConfig;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--socket-name") == 0 && i + 1 < argc) {
+            socketName = argv[++i];
+        } else if (strcmp(argv[i], "--sandbox-config") == 0 && i + 1 < argc) {
+            sandboxConfig = argv[++i];
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            fprintf(stdout,
+                    "Usage: %s [OPTIONS]\n"
+                    "\n"
+                    "Options:\n"
+                    "  --socket-name NAME       Unix socket name (default: %s)\n"
+                    "  --sandbox-config PATH    Sandbox config JSON (default: %s)\n"
+                    "  --help, -h               Show this help\n",
+                    argv[0], kDefaultSocketName, kDefaultSandboxConfig);
+            return 0;
+        } else {
+            LOGW("Unknown argument: %s", argv[i]);
+        }
+    }
+
+    // ============ Phase 1: OH Security Init ============
+    fprintf(stderr, "[MAIN] >>> Phase 1 START <<<\n"); fflush(stderr);
+    LOGI("Phase 1: Initializing OH security modules...");
+    SpawnServer server(socketName);
+
+    int ret = server.initSecurity(sandboxConfig);
+    fprintf(stderr, "[MAIN] initSecurity ret=%d\n", ret); fflush(stderr);
+    if (ret != 0) {
+        LOGE("Failed to initialize security, ret=%d", ret);
+        return 1;
+    }
+
+    ret = server.createListenSocket();
+    fprintf(stderr, "[MAIN] createListenSocket ret=%d\n", ret); fflush(stderr);
+    if (ret != 0) {
+        LOGE("Failed to create listen socket, ret=%d", ret);
+        return 1;
+    }
+
+    fprintf(stderr, "[MAIN] >>> Phase 1 DONE <<<\n"); fflush(stderr);
+    // ============ Phase 2: Android Runtime Init ============
+    fprintf(stderr, "[MAIN] >>> Phase 2 START <<<\n"); fflush(stderr);
+    LOGI("Phase 2: Initializing Android Runtime (ART VM)...");
+    // DEBUG: pause here to allow /proc/<pid>/maps capture before VM init crashes.
+    // Enabled only when APPSPAWNX_DEBUG_SLEEP=<seconds> is set.
+    const char* dbgSleep = getenv("APPSPAWNX_DEBUG_SLEEP");
+    if (dbgSleep && dbgSleep[0]) {
+        int sec = atoi(dbgSleep);
+        fprintf(stderr, "[MAIN] DEBUG sleep %ds (pid=%d)\n", sec, getpid()); fflush(stderr);
+        sleep(sec);
+    }
+    AppSpawnXRuntime runtime;
+
+    // Run startVm + preload on a worker pthread (8MB stack). OH main
+    // thread stack is ~132KB with no auto-extension, which crashes deep
+    // inside ART ClassLinker::Init. See doc/hello_world_verification_plan.html#ch2-5.
+    ret = runtime.startVmAndPreloadOnDedicatedThread();
+    if (ret != 0) {
+        LOGE("Failed to start ART VM on worker pthread, ret=%d", ret);
+        return 1;
+    }
+    LOGI("ART VM started + framework preloaded on worker pthread");
+
+    // ============ Phase 4: Enter Event Loop ============
+    LOGI("Phase 4: Ready to accept spawn requests");
+    LOGI("Listening on /dev/unix/socket/%s", socketName);
+
+    // Set up the fork-based spawn handler
+    server.setSpawnHandler([&](const SpawnMsg& msg) -> int {
+        LOGI("Spawn request: proc=%s bundle=%s uid=%d flags=0x%llx",
+             msg.procName.c_str(), msg.bundleName.c_str(), msg.uid,
+             static_cast<unsigned long long>(msg.flags));
+
+        if (msg.hasFlag(StartFlags::COLD_START)) {
+            LOGI("Cold start requested for %s", msg.procName.c_str());
+        }
+
+        if (msg.hasFlag(StartFlags::DEBUGGABLE)) {
+            LOGI("Debuggable flag set for %s", msg.procName.c_str());
+        }
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            LOGE("fork() failed: %s", strerror(errno));
+            return -1;
+        }
+
+        if (pid == 0) {
+            // ---- Child process ----
+            // Close the listening socket (child doesn't accept connections)
+            server.closeSocket();
+
+            // Enter child main – this function does not return
+            ChildMain::run(msg, &runtime);
+
+            // Should never reach here
+            _exit(1);
+        }
+
+        // ---- Parent process ----
+        LOGI("Spawned child pid=%d for %s (uid=%d)",
+             pid, msg.procName.c_str(), msg.uid);
+        return pid;
+    });
+
+    // Enter the event loop (blocks forever)
+    server.run();
+
+    // Should never reach here
+    LOGE("Event loop exited unexpectedly");
+    return 1;
+}

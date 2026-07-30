@@ -1,11 +1,11 @@
 #!/bin/bash
 # App-dex surgery: rewrite invoke-interface-on-Proxy call sites to invoke-static into a merged
 # westlake/WlProxy helper. This is what made the sound library load.
-set -e
+set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; . "$HERE/env.sh"
+board_online || exit 1
 OUT="${OUT:-/tmp/noice-patch}"; rm -rf "$OUT"; mkdir -p "$OUT/cls" "$OUT/dex"
-"$HDC" file recv "$ASX/noice.apk" "$(wslpath -w "$WIN_STAGE/noice-orig.apk")" >/dev/null
-cp "$WIN_STAGE/noice-orig.apk" "$OUT/orig.apk"
+recv "$ASX/noice.apk" "$OUT/orig.apk" || exit 1
 cd "$OUT" && unzip -o -q orig.apk classes.dex
 
 javac -nowarn -source 8 -target 8 -bootclasspath "$ANDROID_JAR" -d "$OUT/cls" "$HERE/../java/westlake/WlProxy.java"

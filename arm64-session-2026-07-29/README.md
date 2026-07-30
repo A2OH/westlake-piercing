@@ -7,10 +7,18 @@ Work from one long bring-up session on board `5cdbf6af…` (aarch64, OHOS 6.1.0.
 > goes where on the device and which rollback backups already exist there.
 > This file explains **what** each fix does and **why** — the reasoning, not the procedure.
 
-⚠️**These are SNAPSHOT COPIES, not drop-in replacements.** They come from the live build tree
-`/home/dspfac/bridge-build/src/framework/**`, which has **diverged** from this repo's `bridge-src/`
-(e.g. `oh_input_bridge.cpp` is 148,518 B here vs 74,901 B in `bridge-src/`). Nothing tracked was
-overwritten. Reconcile deliberately before merging into `bridge-src/`.
+### Which bridge tree to build
+`bridge-full-src/` is the **complete** native source the working `liboh_adapter_bridge.so` is built
+from — all 96 `.cpp` plus headers, copied verbatim from the live tree. `build_bridge_arm64.sh` compiles
+it by default (`BRIDGE_SRC=` overrides), and it is **verified to build**: 94/96 compile and the .so
+links, the two expected failures being unused files.
+
+⚠️It has **diverged from this repo's older `bridge-src/`** (e.g. `oh_input_bridge.cpp` is 148,518 B
+here vs 74,901 B there). Nothing tracked was overwritten; `bridge-src/` is left as-is. Reconcile
+deliberately — do not assume they are interchangeable.
+
+`bridge/` keeps just the **seven files changed in this session**, as a readable diff surface. It is a
+subset of `bridge-full-src/`, not a separate version.
 
 ## What got fixed (all verified on device unless marked)
 
@@ -61,11 +69,20 @@ fetcher for it is written and deployed but **UNVERIFIED** — the board dropped 
 
 ## Layout
 ```
-bridge/    snapshot copies of the changed native sources
-java/      new BCP helpers (adapter.compat.*, android.net.ssl.SSLSockets) + android.app.WlAmsBridge
-tools/     dexlib2 utilities: call-site finders, dex rewriters, disassemblers, catch-handler injector
-minikin/   the HarfBuzz font-lifetime fix as a diff
+REPRODUCE.md          start here: prerequisites -> build -> deploy -> verify -> drive UI -> known-broken
+ARTIFACT-MAP.md       artifact -> device path, rollback backups, where the non-rebuildable libart lives
+bridge-full-src/      COMPLETE native bridge source (96 .cpp, 391 files) -- what actually gets built
+bridge-build-inputs/  overlay/ + stubinc/ + bridge_incs_all.txt + musl_compat.* (the rest of the build)
+bridge/               just the 7 files changed this session (a readable subset of bridge-full-src/)
+java/                 new BCP helpers (adapter.compat.*, android.net.ssl.SSLSockets) + android.app.WlAmsBridge
+tools/                dexlib2 utilities: call-site finders, dex rewriters, disassemblers, catch injector
+recipes/              env.sh + the four build/patch/sign-in recipes
+scripts/host|build|device/   13 host drivers, 6 aarch64 build scripts, run406.sh
+native-tools/         touchfwd.c + the DNS/TCP/IPv6 probes
+minikin/              the HarfBuzz font-lifetime fix as a diff
 ```
+Paths are parameterised by **`$WLROOT`** (default `$HOME`) so nothing here hardcodes one machine's
+home directory; `recipes/env.sh` sets it and auto-detects the Windows-side tools dir.
 
 ## Board note
 `hdc` lists nothing while Windows still enumerates the device as `APP Mode` ⇒ hdcd/USB-debugging is

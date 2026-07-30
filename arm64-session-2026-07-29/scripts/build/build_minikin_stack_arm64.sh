@@ -5,15 +5,15 @@
 # ohos-sdk-6.1 native sysroot, matching build_aosp_lib_arm64.sh conventions).
 set -o pipefail
 
-OH=/home/dspfac/openharmony
-AOSP=/home/dspfac/aosp-android-11
-NDK=/home/dspfac/ohos-sdk-6.1/linux/native
+OH=$WLROOT/openharmony
+AOSP=$WLROOT/aosp-android-11
+NDK=$WLROOT/ohos-sdk-6.1/linux/native
 SR=$NDK/sysroot
-B64=/home/dspfac/bridge-build-arm64
+B64=$WLROOT/bridge-build-arm64
 OUT=$B64/aosp_lib          # arm64 libs (libbase/liblog/libutils/... already here)
 TMP=/tmp/minikin_stack64
 LOG=$B64/minikin_stack64.log
-BC=/home/dspfac/bridge-build/framework/appspawn-x/bionic_compat/include
+BC=$WLROOT/bridge-build/framework/appspawn-x/bionic_compat/include
 
 CXX=$OH/prebuilts/clang/ohos/linux-x86_64/llvm/bin/clang++
 CC=$OH/prebuilts/clang/ohos/linux-x86_64/llvm/bin/clang
@@ -120,7 +120,7 @@ if should_build libminikin; then
     banner "4. libminikin (Android text layout)"
     # ★ minikin MUST match the hwui generation (android-14) — android-11's minikin::Font
     # has no typeface() and hwui/MinikinSkia.cpp et al. fail against it.
-    MK14=/home/dspfac/aosp-14-minikin
+    MK14=$WLROOT/aosp-14-minikin
     MK="$MK14/libs/minikin"; MKD="$TMP/minikin"; mkdir -p "$MKD"
     MK_SRCS=(BidiUtils.cpp BoundsCache.cpp CmapCoverage.cpp Emoji.cpp Font.cpp FontCollection.cpp
         FontFamily.cpp FontFeatureUtils.cpp FontFileParser.cpp FontUtils.cpp GraphemeBreak.cpp
@@ -131,7 +131,7 @@ if should_build libminikin; then
     # NOTE(arm64): aosp-android-11 has no system/libbase|core|logging synced, so the
     # support headers come from aosp-15 (same tree our arm64 libbase/liblog/libutils
     # were built from).  $BC supplies gtest/gtest_prod.h which minikin/Layout.h needs.
-    A15=/home/dspfac/aosp-15
+    A15=$WLROOT/aosp-15
     MK_CFLAGS=(-I$MK14/include -I$MK14/libs/minikin
         -I$AOSP/external/harfbuzz_ng/src -I$AOSP/external/icu/icu4c/source/common
         -I$AOSP/external/icu/icu4c/source/i18n -I$BC

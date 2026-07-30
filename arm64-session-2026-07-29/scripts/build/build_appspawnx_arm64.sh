@@ -5,16 +5,16 @@
 # libnativehelper headers, my arm64 libart. COMPILE phase validates 6.1 header
 # compatibility (surfaces API drift = the porting work); LINK pulls board .so's.
 set -o pipefail
-OHSRC=/home/dspfac/ohos-6.1-src                       # sparse-synced 6.1 inner-API headers
-NDK=/home/dspfac/ohos-sdk-6.1/linux/native            # 6.1 SDK: clang15 + arm64 sysroot
+OHSRC=$WLROOT/ohos-6.1-src                       # sparse-synced 6.1 inner-API headers
+NDK=$WLROOT/ohos-sdk-6.1/linux/native            # 6.1 SDK: clang15 + arm64 sysroot
 SYSROOT=$NDK/sysroot
 CXX=$NDK/llvm/bin/clang++
-AOSP=/home/dspfac/aosp-android-11                     # libnativehelper (jni.h, JniInvocation)
-ADAPTER=/home/dspfac/bridge-build/src/framework       # appspawn-x src + bionic_compat headers
-LIBARTDIR=/home/dspfac/art-universal-build/build-ohos-arm64/lib
+AOSP=$WLROOT/aosp-android-11                     # libnativehelper (jni.h, JniInvocation)
+ADAPTER=$WLROOT/bridge-build/src/framework       # appspawn-x src + bionic_compat headers
+LIBARTDIR=$WLROOT/art-universal-build/build-ohos-arm64/lib
 BC=$ADAPTER/appspawn-x/bionic_compat/include
-O=/home/dspfac/bridge-build-arm64/out; mkdir -p $O
-TMP=/home/dspfac/bridge-build-arm64/appspawnx_build; rm -rf $TMP; mkdir -p $TMP
+O=$WLROOT/bridge-build-arm64/out; mkdir -p $O
+TMP=$WLROOT/bridge-build-arm64/appspawnx_build; rm -rf $TMP; mkdir -p $TMP
 BOARD=5cdbf6af00000000000000000923012c
 
 INC="-I$ADAPTER/appspawn-x/src \
@@ -59,8 +59,8 @@ echo "  compiled $ok/$((ok+fl))"
 [ $fl -gt 0 ] && { echo "COMPILE phase incomplete ($fl failed) — resolve before link"; exit 2; }
 
 echo "=== COMPILE clean — LINK appspawn-x (arm64) ==="
-NH=/home/dspfac/art-latest/build-ohos-arm64/nativehelper
-AB=/home/dspfac/art-latest/build-ohos-arm64/android-base
+NH=$WLROOT/art-latest/build-ohos-arm64/nativehelper
+AB=$WLROOT/art-latest/build-ohos-arm64/android-base
 BUILTINS=$NDK/llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/libclang_rt.builtins.a
 LIBDIR=$O/board_libs   # 7 OHOS .so's pulled from board /system/lib64 (recv via Windows path)
 $CXX --target=aarch64-linux-ohos --sysroot=$SYSROOT -fuse-ld=lld \
