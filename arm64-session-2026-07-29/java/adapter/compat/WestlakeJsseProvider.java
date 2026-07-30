@@ -26,5 +26,13 @@ public final class WestlakeJsseProvider extends Provider {
         put("TrustManagerFactory.X509", tmf);
         put("TrustManagerFactory.SunX509", tmf);
         put("Alg.Alias.TrustManagerFactory.SunPKIX", "PKIX");
+        // §474: this BCP has no SecureRandom either. `new SecureRandom()` threw
+        // "No SecureRandom implementation!", which broke ExoPlayer's SimpleCache (it generates its
+        // cache UID with one) and so broke playback.
+        String srng = "adapter.compat.WestlakeSecureRandomSpi";
+        put("SecureRandom.SHA1PRNG", srng);
+        put("SecureRandom.NativePRNG", srng);
+        put("SecureRandom.DRBG", srng);
+        put("Alg.Alias.SecureRandom.NativePRNGNonBlocking", "NativePRNG");
     }
 }

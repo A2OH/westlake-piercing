@@ -2023,6 +2023,26 @@ static void wl_install_media_session(JNIEnv* env) {
     env->DeleteLocalRef(cls);
 }
 
+// §476: seed "power" + "thermalservice" so SystemServiceRegistry can build a PowerManager. Without
+// them SoundPlaybackService's wakeLock lazy throws "Required value was null." and playback never
+// starts. Same shape as the media-session installer.
+static void wl_install_system_services(JNIEnv* env) {
+    jclass cls = env->FindClass("adapter/compat/WlSystemServices");
+    if (cls == nullptr) { env->ExceptionClear();
+        fprintf(stderr, "[WESTLAKE-476] WlSystemServices NOT FOUND\n"); fflush(stderr); return; }
+    jmethodID m = env->GetStaticMethodID(cls, "install", "()Ljava/lang/String;");
+    if (m == nullptr) { env->ExceptionClear(); env->DeleteLocalRef(cls); return; }
+    jstring r = (jstring) env->CallStaticObjectMethod(cls, m);
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+    if (r != nullptr) {
+        const char* c = env->GetStringUTFChars(r, nullptr);
+        fprintf(stderr, "[WESTLAKE-476] system services: %s\n", c ? c : "(null)");
+        if (c) env->ReleaseStringUTFChars(r, c);
+    }
+    fflush(stderr);
+    env->DeleteLocalRef(cls);
+}
+
 static void wl_install_shortcut_service(JNIEnv* env) {
     jclass cls = env->FindClass("adapter/compat/WlShortcutService");
     if (cls == nullptr) {
@@ -2241,7 +2261,21 @@ static bool wl_cnv_init() {
     return true;
 }
 
-static void wl_cnv_free(void* p) { if (p && g_cnv.ok) g_cnv.close(p); }
+// This is handed to Java as the NativeAllocationRegistry finalizer (getNativeFinalizer), so the GC
+// calls it with whatever handle the Java object holds -- including one of libart's fake integers.
+// ucnv_close(0x1) would fault exactly like the encode path did, on a GC thread. Only ever close a
+// real converter, and route a stub handle to the converter we adopted for it.
+static void wl_cnv_free(void* p) {
+    if (p == nullptr || !g_cnv.ok) return;
+    const uintptr_t v = (uintptr_t)p;
+    if (v >= kMinRealPointer) { wl_cnv_untrack(p); g_cnv.close(p); return; }
+    pthread_mutex_lock(&g_cnv_lk);
+    auto it = g_cnv_stub.find(v);
+    void* real = (it == g_cnv_stub.end()) ? nullptr : it->second;
+    if (it != g_cnv_stub.end()) g_cnv_stub.erase(it);
+    pthread_mutex_unlock(&g_cnv_lk);
+    if (real != nullptr) g_cnv.close(real);
+}
 
 static jlong WL_Cnv_open(JNIEnv* env, jclass, jstring jname) {
     if (!wl_cnv_init() || jname == nullptr) return 0;
@@ -2823,7 +2857,8 @@ int AndroidRuntime::startReg(JNIEnv* env) {
     wl_register_tls_natives(env);       // WESTLAKE §441 — real TLS over OHOS OpenSSL
     wl_register_probe_log(env);         // WESTLAKE §450 — native log sink for app code
     wl_register_audiopolicy_natives(env); // WESTLAKE §468 — unblock AudioAttributes/<clinit>
-    wl_install_media_session(env);      // WESTLAKE §467 — media_session for MediaSession
+    wl_install_media_session(env);       // WESTLAKE §467 — media_session for MediaSession
+    wl_install_system_services(env);     // WESTLAKE §476 — power + thermalservice for PowerManager
     wl_install_shortcut_service(env);   // WESTLAKE §454 — real IShortcutService (Presets page)
     wl_install_ams_bind(env);           // WESTLAKE §458 — bindService -> InProcessServiceBinder
     wl_install_audio_focus(env);        // WESTLAKE §459 — requestAudioFocus -> GRANTED

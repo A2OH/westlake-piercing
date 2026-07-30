@@ -191,6 +191,22 @@ public final class WlAmsBind {
             if (svc == null) return;
             probeAudioAttributesCompat();
             int id = sStartId.getAndIncrement();
+            // §475: "IllegalArgumentException: Required value was null." told us nothing about WHICH
+            // command failed, and libart's throw probe caps at 40 so its throw-site stack was
+            // crowded out. Log the action and extras we are about to deliver -- the service switches
+            // on the action, so this alone narrows the failure to one branch.
+            try {
+                StringBuilder sb = new StringBuilder("[WESTLAKE-475] deliver action=")
+                        .append(intent.getAction());
+                android.os.Bundle ex = intent.getExtras();
+                if (ex != null) {
+                    for (String k : ex.keySet()) sb.append(' ').append(k).append('=').append(ex.get(k));
+                } else {
+                    sb.append(" (no extras)");
+                }
+                System.err.println(sb.toString());
+                System.err.flush();
+            } catch (Throwable ignored) { }
             Method osc = Class.forName("android.app.Service")
                     .getMethod("onStartCommand", Intent.class, int.class, int.class);
             Object r = osc.invoke(svc, intent, Integer.valueOf(0), Integer.valueOf(id));
@@ -300,7 +316,11 @@ public final class WlAmsBind {
         Throwable c = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
                 ? t.getCause() : t;
         System.err.println("[WESTLAKE-458] " + what + ": " + c);
-        c.printStackTrace();
+        // ★printStackTrace() is a NO-OP in this runtime -- the log shows
+        // "[RT] Throwable.printStackTrace (fork-safe noop)". Using it here silently discarded the
+        // stack for "IllegalArgumentException: Required value was null.", leaving only a message with
+        // no idea which callee threw it. Route through the native sink instead (§450).
+        WlProbe.logThrowable(c);
         System.err.flush();
     }
 

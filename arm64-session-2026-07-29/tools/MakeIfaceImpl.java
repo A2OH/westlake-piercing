@@ -119,6 +119,17 @@ public class MakeIfaceImpl {
                         new ImmutableMethodImplementation(regCount, body, null, null)));
                 n++;
             }
+            // queryLocalInterface(String) -> this. Binder's own version only answers when
+            // attachInterface() was called, so without this override <Iface>$Stub.asInterface(binder)
+            // would fall back to a transacting Stub.Proxy and fail. Returning `this` lets the impl be
+            // seeded straight into ServiceManager.sCache and used with no Binder transaction at all.
+            methods.add(new ImmutableMethod(implType, "queryLocalInterface",
+                    Collections.singletonList(new ImmutableMethodParameter("Ljava/lang/String;", null, null)),
+                    "Landroid/os/IInterface;", AccessFlags.PUBLIC.getValue(), null, null,
+                    new ImmutableMethodImplementation(2, Arrays.<com.android.tools.smali.dexlib2.iface.instruction.Instruction>asList(
+                            new ImmutableInstruction11x(Opcode.RETURN_OBJECT, 0)), null, null)));
+            n++;
+
             boolean hasAsBinder = false;
             for (Method m : methods) if ("asBinder".equals(m.getName())) hasAsBinder = true;
             if (!hasAsBinder) {

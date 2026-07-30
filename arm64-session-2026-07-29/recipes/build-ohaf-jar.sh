@@ -14,6 +14,7 @@ javac -nowarn -source 8 -target 8 -bootclasspath "$ANDROID_JAR" -cp "$OUT/cls" -
   "$SRC"/adapter/compat/Westlake*.java \
   "$SRC"/adapter/compat/WlAmsBind.java "$SRC"/adapter/compat/WlAudioFocus.java \
   "$SRC"/adapter/compat/WlShortcutService.java "$SRC"/adapter/compat/WlMediaSession.java \
+  "$SRC"/adapter/compat/WlSystemServices.java \
   "$SRC"/android/net/ssl/SSLSockets.java
 # ⚠️d8 REJECTS javac-21 anonymous inner classes and enums. Use named classes only.
 # ⚠️If d8 fails it produces NO classes.dex — check for it before packing, or you ship a stale jar.
@@ -23,13 +24,19 @@ test -f "$OUT/dex/classes.dex" || { echo "FAIL: d8 produced no dex"; exit 1; }
 # §473: generate REAL implementation classes for the media-session AIDL interfaces and merge them in.
 # A dynamic Proxy for these detonates on the first interface call (§436); an ordinary class does not.
 # Generated from framework.jar's own dex so the signatures always match what the caller resolves.
-IMPL_IFACES="Landroid/media/session/ISessionManager; Landroid/media/session/ISession; Landroid/media/session/ISessionController;"
 recv "$ASX/fw/framework.jar" "$OUT/framework.jar" || exit 1
-( cd "$OUT" && unzip -o -q framework.jar 'classes2.dex' )
+( cd "$OUT" && unzip -o -q framework.jar 'classes*.dex' )
 javac -nowarn -cp "$DEXLIB_CP" -d "$OUT" "$HERE/../tools/MakeIfaceImpl.java" "$HERE/../tools/DexMerge.java"
-java -cp "$DEXLIB_CP:$OUT" MakeIfaceImpl "$OUT/classes2.dex" "$OUT/impl.dex" $IMPL_IFACES
-java -cp "$DEXLIB_CP:$OUT" DexMerge "$OUT/dex/classes.dex" "$OUT/impl.dex" "$OUT/dex/merged.dex"
-mv "$OUT/dex/merged.dex" "$OUT/dex/classes.dex"
+# The interfaces are spread across framework.jar's dex files, so generate per source dex.
+#   classes2.dex: the media-session chain      classes3.dex: power + thermal
+java -cp "$DEXLIB_CP:$OUT" MakeIfaceImpl "$OUT/classes2.dex" "$OUT/impl-session.dex" \
+  "Landroid/media/session/ISessionManager;" "Landroid/media/session/ISession;" \
+  "Landroid/media/session/ISessionController;"
+java -cp "$DEXLIB_CP:$OUT" MakeIfaceImpl "$OUT/classes3.dex" "$OUT/impl-power.dex" \
+  "Landroid/os/IPowerManager;" "Landroid/os/IThermalService;"
+java -cp "$DEXLIB_CP:$OUT" DexMerge "$OUT/dex/classes.dex" "$OUT/impl-session.dex" "$OUT/dex/m1.dex"
+java -cp "$DEXLIB_CP:$OUT" DexMerge "$OUT/dex/m1.dex" "$OUT/impl-power.dex" "$OUT/dex/m2.dex"
+mv "$OUT/dex/m2.dex" "$OUT/dex/classes.dex"
 
 # pull the current jar and swap classes2.dex only
 recv "$ASX/fw/oh-adapter-framework.jar" "$OUT/base.jar" || exit 1
