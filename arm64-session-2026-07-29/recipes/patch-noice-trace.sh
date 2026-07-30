@@ -55,6 +55,10 @@ java -Xmx4g -cp "$DEXLIB_CP:$OUT" InjectTrace "$OUT/merged.dex" "$OUT/traced.dex
   "$LSP:<init>:-1:s19" \
   "Lcom/github/ashutoshgngwr/noice/engine/MediaPlayer;:A:7:mpstate:0" \
   "$LSP:n:-1:s20" \
+  "$LSP:<init>:24:scope:5" \
+  "Lcom/github/ashutoshgngwr/noice/engine/LocalSoundPlayer\$Factory\$buildPlayer\$1;:a:-1:s24" \
+  "$LSP:n:30:s25" \
+  "$LSP:<init>:26:job:3" \
   "Lcom/github/ashutoshgngwr/noice/engine/LocalSoundPlayer\$loadSoundMetadataJob\$1;:v:-1:s22" \
   "Lcom/github/ashutoshgngwr/noice/engine/LocalSoundPlayer\$loadSoundMetadataJob\$1;:k:-1:s23"
 

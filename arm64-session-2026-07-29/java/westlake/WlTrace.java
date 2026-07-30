@@ -39,6 +39,9 @@ public final class WlTrace {
     public static void s16() { hit("LocalSoundPlayer.d(boolean)"); }
     public static void s17() { hit("LocalSoundPlayer.m(boolean)"); }
     public static void s18() { hit("SoundPlayer.k(State) — state transition"); }
+    public static void s24() { hit("SoundMetadataSource.load() ENTER — repository fetch starts"); }
+    public static void s25() { hit("loadSoundMetadata: RESUMED past the load (segments in hand)"); }
+
     public static void s22() { hit("loadSoundMetadataJob invokeSuspend v() — coroutine body RAN"); }
     public static void s23() { hit("loadSoundMetadataJob k() — coroutine invoke()"); }
 
