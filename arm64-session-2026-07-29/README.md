@@ -2,6 +2,11 @@
 
 Work from one long bring-up session on board `5cdbf6af…` (aarch64, OHOS 6.1.0.31).
 
+> **Picking this up cold?** Read [REPRODUCE.md](REPRODUCE.md) — ordered build/deploy/verify steps, how
+> to drive the UI, and what is still broken. [ARTIFACT-MAP.md](ARTIFACT-MAP.md) says which built file
+> goes where on the device and which rollback backups already exist there.
+> This file explains **what** each fix does and **why** — the reasoning, not the procedure.
+
 ⚠️**These are SNAPSHOT COPIES, not drop-in replacements.** They come from the live build tree
 `/home/dspfac/bridge-build/src/framework/**`, which has **diverged** from this repo's `bridge-src/`
 (e.g. `oh_input_bridge.cpp` is 148,518 B here vs 74,901 B in `bridge-src/`). Nothing tracked was
