@@ -20,6 +20,17 @@ javac -nowarn -source 8 -target 8 -bootclasspath "$ANDROID_JAR" -cp "$OUT/cls" -
 $D8 --release --min-api 30 --lib "$ANDROID_JAR" --output "$OUT/dex" $(find "$OUT/cls" -name '*.class')
 test -f "$OUT/dex/classes.dex" || { echo "FAIL: d8 produced no dex"; exit 1; }
 
+# §473: generate REAL implementation classes for the media-session AIDL interfaces and merge them in.
+# A dynamic Proxy for these detonates on the first interface call (§436); an ordinary class does not.
+# Generated from framework.jar's own dex so the signatures always match what the caller resolves.
+IMPL_IFACES="Landroid/media/session/ISessionManager; Landroid/media/session/ISession; Landroid/media/session/ISessionController;"
+recv "$ASX/fw/framework.jar" "$OUT/framework.jar" || exit 1
+( cd "$OUT" && unzip -o -q framework.jar 'classes2.dex' )
+javac -nowarn -cp "$DEXLIB_CP" -d "$OUT" "$HERE/../tools/MakeIfaceImpl.java" "$HERE/../tools/DexMerge.java"
+java -cp "$DEXLIB_CP:$OUT" MakeIfaceImpl "$OUT/classes2.dex" "$OUT/impl.dex" $IMPL_IFACES
+java -cp "$DEXLIB_CP:$OUT" DexMerge "$OUT/dex/classes.dex" "$OUT/impl.dex" "$OUT/dex/merged.dex"
+mv "$OUT/dex/merged.dex" "$OUT/dex/classes.dex"
+
 # pull the current jar and swap classes2.dex only
 recv "$ASX/fw/oh-adapter-framework.jar" "$OUT/base.jar" || exit 1
 python3 - "$OUT/base.jar" "$OUT/dex/classes.dex" "$OUT/ohaf.jar" <<'PY'

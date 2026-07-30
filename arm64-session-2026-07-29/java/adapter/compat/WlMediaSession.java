@@ -38,8 +38,26 @@ public final class WlMediaSession {
         private final ClassLoader cl;
         Inert(String label, ClassLoader cl) { this.label = label; this.cl = cl; }
 
+        // §472: once MediaSessionManager could really be built, the child died with a repeating
+        // DoCall/INVOKE_INTERFACE_RANGE frame pattern -- runaway recursion, not a null deref. Handing
+        // back a brand-new proxy for every interface-typed return lets a caller walk an unbounded
+        // chain of them. Bound the depth, and report which interface+method is doing the walking.
+        private static final ThreadLocal<int[]> DEPTH = new ThreadLocal<int[]>() {
+            @Override protected int[] initialValue() { return new int[1]; }
+        };
+        private static final int MAX_DEPTH = 24;
+        private static final java.util.Set<String> SEEN =
+                java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
         @Override public Object invoke(Object proxy, Method method, Object[] args) {
             final String n = method.getName();
+            // Log each distinct interface.method ONCE -- a call-count cap would saturate on chatter
+            // and hide the one that actually recurses.
+            String key = method.getDeclaringClass().getName() + "." + n;
+            if (SEEN.add(key)) {
+                System.err.println("[WESTLAKE-472] inert " + label + " -> " + key);
+                System.err.flush();
+            }
             if ("asBinder".equals(n)) return proxy;
             if ("toString".equals(n)) return label;
             if ("hashCode".equals(n)) return Integer.valueOf(System.identityHashCode(proxy));
@@ -53,9 +71,20 @@ public final class WlMediaSession {
             if (rt == float.class)   return Float.valueOf(0f);
             if (rt == double.class)  return Double.valueOf(0d);
             // Never hand back null for an interface: callers dereference these immediately.
+            // ...but stop if we are already deep in a chain of inert proxies, or a caller that walks
+            // interface-typed getters will recurse until the stack dies (§472).
             if (rt.isInterface()) {
-                Object o = make(cl, rt.getName(), "Wl" + rt.getSimpleName());
-                if (o != null) return o;
+                int[] d = DEPTH.get();
+                if (d[0] >= MAX_DEPTH) {
+                    System.err.println("[WESTLAKE-472] depth cap at " + key + " -> null");
+                    System.err.flush();
+                    return null;
+                }
+                d[0]++;
+                try {
+                    Object o = make(cl, rt.getName(), "Wl" + rt.getSimpleName());
+                    if (o != null) return o;
+                } finally { d[0]--; }
             }
             return null;
         }
@@ -133,12 +162,39 @@ public final class WlMediaSession {
         }
     }
 
+    /**
+     * §473: prefer a REAL generated class over a dynamic Proxy.
+     *
+     * §436 means any java.lang.reflect.Proxy blows up the first time framework code invokes an
+     * interface method on it -- here MediaSession.<init> -> MediaSessionManager.createSession ->
+     * ISessionManager.createSession threw "NoSuchMethodError: No InvokeType(4) method createSession"
+     * and then took the stack out. tools/MakeIfaceImpl.java emits westlake.impl.*Impl, ordinary
+     * classes implementing the same interfaces, which dispatch through the normal path.
+     * Falls back to the Proxy if the generated classes are not on the BCP, so this stays working on
+     * a deployment that has not had the impl dex merged in yet.
+     */
+    static Object realOrProxy(ClassLoader cl, String iface, String label) {
+        String simple = iface.substring(iface.lastIndexOf('.') + 1);
+        try {
+            Class<?> impl = Class.forName("westlake.impl." + simple + "Impl", true, cl);
+            Object o = impl.getDeclaredConstructor().newInstance();
+            System.err.println("[WESTLAKE-473] using generated " + impl.getName() + " (not a Proxy)");
+            System.err.flush();
+            return o;
+        } catch (Throwable t) {
+            System.err.println("[WESTLAKE-473] no generated impl for " + iface + " (" + t
+                    + ") -- falling back to Proxy, expect §436 on first interface call");
+            System.err.flush();
+            return make(cl, iface, label);
+        }
+    }
+
     public static String install() {
         try {
             ClassLoader cl = WlMediaSession.class.getClassLoader();
             Class<?> ism = Class.forName("android.media.session.ISessionManager", false, cl);
-            Object mgr = make(cl, "android.media.session.ISessionManager", "WlSessionManager");
-            if (mgr == null) return "could not build ISessionManager proxy";
+            Object mgr = realOrProxy(cl, "android.media.session.ISessionManager", "WlSessionManager");
+            if (mgr == null) return "could not build ISessionManager impl";
 
             LocalBinder binder = new LocalBinder();
             binder.setIface((IInterface) mgr);
