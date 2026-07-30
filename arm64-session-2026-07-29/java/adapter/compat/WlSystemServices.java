@@ -31,6 +31,11 @@ public final class WlSystemServices {
     private static final String[][] SERVICES = {
         { "power",          "westlake.impl.IPowerManagerImpl"  },
         { "thermalservice", "westlake.impl.IThermalServiceImpl" },
+        // §479: MediaRouter is constructed by androidx's SystemMediaRouteProvider during playback
+        // setup, and with no "media_router" service every one of its calls NPE'd on a null
+        // IMediaRouterService — registerClientAsUser, getState, setDiscoveryRequest, setSelectedRoute,
+        // isPlaybackActive. That storm also ate libart's 40-slot throw probe, hiding real failures.
+        { "media_router",   "westlake.impl.IMediaRouterServiceImpl" },
     };
 
     @SuppressWarnings("unchecked")

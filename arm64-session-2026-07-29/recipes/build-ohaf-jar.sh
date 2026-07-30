@@ -31,7 +31,7 @@ javac -nowarn -cp "$DEXLIB_CP" -d "$OUT" "$HERE/../tools/MakeIfaceImpl.java" "$H
 #   classes2.dex: the media-session chain      classes3.dex: power + thermal
 java -cp "$DEXLIB_CP:$OUT" MakeIfaceImpl "$OUT/classes2.dex" "$OUT/impl-session.dex" \
   "Landroid/media/session/ISessionManager;" "Landroid/media/session/ISession;" \
-  "Landroid/media/session/ISessionController;"
+  "Landroid/media/session/ISessionController;" "Landroid/media/IMediaRouterService;"
 java -cp "$DEXLIB_CP:$OUT" MakeIfaceImpl "$OUT/classes3.dex" "$OUT/impl-power.dex" \
   "Landroid/os/IPowerManager;" "Landroid/os/IThermalService;"
 java -cp "$DEXLIB_CP:$OUT" DexMerge "$OUT/dex/classes.dex" "$OUT/impl-session.dex" "$OUT/dex/m1.dex"

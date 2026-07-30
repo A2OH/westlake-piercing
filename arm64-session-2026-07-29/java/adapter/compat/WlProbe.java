@@ -16,18 +16,44 @@ public final class WlProbe {
     /** §450: native sink — Android routes System.err to the log framework, not to our fd 2. */
     private static native void nativeLog(String s);
 
-    /** Called from injected bytecode in noice's catch handlers so the real Throwable is visible. */
+    /**
+     * Called from injected bytecode in noice's catch handlers so the real Throwable is visible.
+     *
+     * ★§477: this used to delegate to t.printStackTrace(PrintWriter), which produces a HEADER AND NO
+     * FRAMES here -- every printStackTrace overload in this runtime is stubbed out
+     * ("[RT] Throwable.printStackTrace (fork-safe noop)"). That silently cost a debugging session:
+     * the exception was reported with an empty stack, and libart's own throw probe caps at 40 and had
+     * been saturated by unrelated throws, so there was no stack from either source. Walk
+     * getStackTrace() by hand instead — it works — and follow the cause chain.
+     */
     public static void logThrowable(Throwable t) {
         try {
-            java.io.StringWriter sw = new java.io.StringWriter();
-            t.printStackTrace(new java.io.PrintWriter(sw));
-            String s = sw.toString();
-            if (s.length() > 3000) s = s.substring(0, 3000) + " ...(truncated)";
-            nativeLog(s);
+            nativeLog(render(t));
         } catch (Throwable ignored) {
             try { nativeLog("logThrowable failed for " + t.getClass().getName()); }
             catch (Throwable ignored2) { }
         }
+    }
+
+    private static String render(Throwable t) {
+        StringBuilder sb = new StringBuilder();
+        String prefix = "";
+        for (Throwable c = t; c != null && sb.length() < 6000; c = c.getCause()) {
+            sb.append(prefix).append(c.getClass().getName());
+            String m = c.getMessage();
+            if (m != null) sb.append(": ").append(m);
+            sb.append('\n');
+            StackTraceElement[] fr = c.getStackTrace();
+            if (fr == null || fr.length == 0) {
+                sb.append("\tat <no frames — getStackTrace() empty>\n");
+            } else {
+                for (int i = 0; i < fr.length && i < 40; i++) sb.append("\tat ").append(fr[i]).append('\n');
+                if (fr.length > 40) sb.append("\t... ").append(fr.length - 40).append(" more\n");
+            }
+            prefix = "Caused by: ";
+            if (c.getCause() == c) break;
+        }
+        return sb.toString();
     }
 
     /** Ordinary named class implementing the interface. */
