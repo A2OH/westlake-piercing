@@ -1,0 +1,45 @@
+diff --git a/libs/minikin/Font.cpp b/libs/minikin/Font.cpp
+index bf7450a..1306d1a 100644
+--- a/libs/minikin/Font.cpp
++++ b/libs/minikin/Font.cpp
+@@ -16,6 +16,8 @@
+ 
+ #define LOG_TAG "Minikin"
+ 
++#include <memory>
++
+ #include "minikin/Font.h"
+ 
+ #include <hb-ot.h>
+@@ -134,7 +136,30 @@ HbFontUniquePtr Font::prepareFont(const std::shared_ptr<MinikinFont>& typeface)
+     size_t size = typeface->GetFontSize();
+     uint32_t ttcIndex = typeface->GetFontIndex();
+ 
+-    HbBlobUniquePtr blob(hb_blob_create(buf, size, HB_MEMORY_MODE_READONLY, nullptr, nullptr));
++    // WESTLAKE §457: give HarfBuzz its OWN copy of the font bytes.
++    //
++    // AOSP passes the raw pointer with no user_data/destroy and relies on the font file mapping
++    // outliving every hb_face. On this port it does not: the mapping is owned elsewhere (the
++    // Java-side mapped buffer), and once it is released the next text measure faults inside
++    // hb_face_reference_table at a page-aligned address that is the base of a font mapping:
++    //   #0 hb_face_reference_table  <- minikin::LayoutPiece  <- LayoutCache::getOrCreate
++    //      <- Layout::doLayoutWord  <- MinikinUtils::measureText (libhwui)
++    // Holding a shared_ptr to the MinikinFont is NOT enough — A/B tested, it still crashed — because
++    // the unmap is not tied to the MinikinFont's lifetime. Copying the bytes removes the dependency
++    // on any external owner, and replaces the previous workaround (a process-wide LD_PRELOAD that
++    // refused to munmap font ranges).
++    HbBlobUniquePtr blob;
++    if (buf != nullptr && size > 0) {
++        auto* owned = new std::vector<uint8_t>(
++                reinterpret_cast<const uint8_t*>(buf), reinterpret_cast<const uint8_t*>(buf) + size);
++        blob.reset(hb_blob_create(reinterpret_cast<const char*>(owned->data()), owned->size(),
++                                  HB_MEMORY_MODE_READONLY, owned,
++                                  [](void* data) { delete static_cast<std::vector<uint8_t>*>(data); }));
++        if (!blob) { delete owned; }
++    }
++    if (!blob) {   // fall back to AOSP behaviour rather than losing the font entirely
++        blob.reset(hb_blob_create(buf, size, HB_MEMORY_MODE_READONLY, nullptr, nullptr));
++    }
+     HbFaceUniquePtr face(hb_face_create(blob.get(), ttcIndex));
+     HbFontUniquePtr parent(hb_font_create(face.get()));
+     hb_ot_font_set_funcs(parent.get());
