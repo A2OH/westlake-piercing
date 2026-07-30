@@ -1,8 +1,9 @@
 #!/bin/bash
 # Build the BCP helper jar: compile java/ -> dex -> replace classes2.dex in oh-adapter-framework.jar.
 # These classes are what make TLS, the service binds, audio focus and the stub services work.
-set -e
+set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; . "$HERE/env.sh"
+board_online || exit 1
 SRC="$HERE/../java"; OUT="${OUT:-/tmp/ohaf-build}"
 rm -rf "$OUT"; mkdir -p "$OUT/cls" "$OUT/dex"
 
@@ -20,12 +21,17 @@ $D8 --release --min-api 30 --lib "$ANDROID_JAR" --output "$OUT/dex" $(find "$OUT
 test -f "$OUT/dex/classes.dex" || { echo "FAIL: d8 produced no dex"; exit 1; }
 
 # pull the current jar and swap classes2.dex only
-"$HDC" file recv "$ASX/fw/oh-adapter-framework.jar" "$(wslpath -w "$WIN_STAGE/ohaf-base.jar")" >/dev/null
-cp "$WIN_STAGE/ohaf-base.jar" "$OUT/base.jar"
+recv "$ASX/fw/oh-adapter-framework.jar" "$OUT/base.jar" || exit 1
 python3 - "$OUT/base.jar" "$OUT/dex/classes.dex" "$OUT/ohaf.jar" <<'PY'
 import sys, zipfile
 base, dex, out = sys.argv[1:4]
 zin = zipfile.ZipFile(base); zout = zipfile.ZipFile(out, 'w')
+# The new dex REPLACES classes2.dex. If that slot is absent the loop below would silently drop it and
+# the jar would ship unchanged -- so fail loudly instead.
+names = zin.namelist()
+if 'classes2.dex' not in names:
+    sys.exit('FATAL: %s has no classes2.dex (found %s). This recipe patches an already-westlake jar; '
+             'it cannot add a new dex slot.' % (base, [n for n in names if n.endswith('.dex')]))
 for i in zin.infolist():
     data = open(dex,'rb').read() if i.filename == 'classes2.dex' else zin.read(i.filename)
     zi = zipfile.ZipInfo(i.filename, date_time=i.date_time)

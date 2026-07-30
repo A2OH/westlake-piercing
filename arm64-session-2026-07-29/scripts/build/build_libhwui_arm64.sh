@@ -9,12 +9,12 @@
 # Usage: bash build_libhwui_arm64.sh [--phases=1,2a,2b,2c,3] [--keep-obj]
 set -o pipefail
 
-OH=/home/dspfac/openharmony
-AOSP=/home/dspfac/aosp-android-11
-A15=/home/dspfac/aosp-15
-ADAPTER=/home/dspfac/bridge-build
-B64=/home/dspfac/bridge-build-arm64
-NDK=/home/dspfac/ohos-sdk-6.1/linux/native
+OH=$WLROOT/openharmony
+AOSP=$WLROOT/aosp-android-11
+A15=$WLROOT/aosp-15
+ADAPTER=$WLROOT/bridge-build
+B64=$WLROOT/bridge-build-arm64
+NDK=$WLROOT/ohos-sdk-6.1/linux/native
 SR=$NDK/sysroot
 ML=$SR/usr/lib/aarch64-linux-ohos
 
@@ -24,8 +24,8 @@ ML=$SR/usr/lib/aarch64-linux-ohos
 # ★ android-14.0.0_r1 is the EXACT baseline aosp_patches/libs/hwui/patches was authored
 # against: all 49 patches apply cleanly (android-11 = 18/49, android-15 = 22/49), and it
 # is the only tree that ships pipeline/skia/SkiaOpenGLPipeline.h (android-15's public
-# tags omit it).  Clone: /home/dspfac/aosp-14-base (sparse, libs/hwui only).
-A14=/home/dspfac/aosp-14-base
+# tags omit it).  Clone: $WLROOT/aosp-14-base (sparse, libs/hwui only).
+A14=$WLROOT/aosp-14-base
 HWUI_SRC=$A14/libs/hwui
 HWUI_PATCH=$ADAPTER/aosp_patches/libs/hwui
 SKIA_OH=$OH/third_party/skia/m133
@@ -80,7 +80,7 @@ INC="-I$HWUI_SRC -I$HWUI_SRC/.. -I$HWUI_SRC/jni"
 INC="$INC -I$A15/frameworks/base/libs/androidfw/include -I$A15/system/incremental_delivery/incfs/util/include -I$A15/external/fmtlib/include"
 # minikin from aosp-15 (matches the aosp-15 hwui that consumes it; android-11's
 # lacks FontFeature.h and its Layout/Font APIs have drifted).
-MK14=/home/dspfac/aosp-14-minikin
+MK14=$WLROOT/aosp-14-minikin
 INC="$INC -I$MK14/include -I$AOSP/external/harfbuzz_ng/src"
 INC="$INC -I$SKIA_COMPAT -I$SKIA_OH -I$SKIA_OH/include -I$SKIA_OH/include/core -I$SKIA_OH/include/private"
 INC="$INC -I$SKIA_OH/src/core -I$SKIA_OH/src/gpu -I$SKIA_OH/src/image -I$SKIA_OH/src/utils -I$SKIA_OH/src/shaders -I$SKIA_OH/src/codec"

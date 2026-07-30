@@ -2,11 +2,11 @@
 # framework.jar dex surgery: 6 invoke-interface/range sites on IActivityManager -> invoke-static/range
 # into a merged android/app/WlAmsBridge. Needed for registerReceiver + PendingIntent under the
 # Proxy-stub AMS. Boots fine; verify before trusting.
-set -e
+set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; . "$HERE/env.sh"
+board_online || exit 1
 OUT="${OUT:-/tmp/fw-patch}"; rm -rf "$OUT"; mkdir -p "$OUT/cls" "$OUT/dex" "$OUT/x"
-"$HDC" file recv "$ASX/fw/framework.jar" "$(wslpath -w "$WIN_STAGE/framework-orig.jar")" >/dev/null
-cp "$WIN_STAGE/framework-orig.jar" "$OUT/orig.jar"
+recv "$ASX/fw/framework.jar" "$OUT/orig.jar" || exit 1
 cd "$OUT/x" && unzip -o -q ../orig.jar 'classes*.dex' && cd "$OUT"
 
 # The helper references @hide types, so compile against throwaway stub interfaces and then dex ONLY

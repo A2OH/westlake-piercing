@@ -15,6 +15,9 @@ import java.io.File;
 import java.util.*;
 
 public class FwRewrite {
+    /** The 6 IActivityManager invoke-interface/range sites this rewrite targets (see REPRODUCE.md). */
+    static final int EXPECTED_SITES = 6;
+
     static final String AM = "Landroid/app/IActivityManager;";
     static final String H  = "Landroid/app/WlAmsBridge;";
     static int patched = 0;
@@ -87,8 +90,16 @@ public class FwRewrite {
         }
         for (ClassDef c : helper.getClasses()) { pool.internClass(c); n++;
             System.out.println("  merged " + c.getType()); }
-        pool.writeTo(new FileDataStore(new File(a[2])));
         System.out.println("classes=" + n + " patched_sites=" + patched);
-        if (patched == 0) { System.out.println("FAIL: nothing patched"); System.exit(2); }
+        // Require EXACTLY the expected site count. "at least one" is not good enough: a partially
+        // rewritten framework.jar boots and then fails later at the site that was missed, which reads
+        // as an unrelated bug. Re-running this on an already-patched jar also lands here (0 sites),
+        // since the invoke-interface it looks for is gone -- always patch a pristine baseline.
+        if (patched != EXPECTED_SITES) {
+            System.out.println("FAIL: expected " + EXPECTED_SITES + " sites, patched " + patched
+                    + " -- input is not a pristine framework.jar, or the target methods moved");
+            System.exit(2);
+        }
+        pool.writeTo(new FileDataStore(new File(a[2])));
     }
 }

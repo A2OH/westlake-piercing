@@ -1,0 +1,459 @@
+/**
+ * appspawn-x ART runtime implementation.
+ *
+ * Creates and configures the ART virtual machine, preloads Android framework
+ * classes and resources for fast fork-based app spawning, and handles
+ * per-child post-fork initialization including OH IPC setup.
+ */
+
+#include "appspawnx_runtime.h"
+#include "spawn_msg.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <setjmp.h>
+#include <unistd.h>
+#include <string>
+#include <vector>
+
+// JniInvocation provides the abstraction to load libart.so at runtime
+#include "nativehelper/JniInvocation.h"
+
+// Abort trap from libart_runtime_stubs.so
+extern "C" volatile int g_abort_trap_enabled;
+extern "C" jmp_buf g_abort_jmpbuf;
+
+namespace appspawnx {
+
+// ---------------------------------------------------------------------------
+// JNI_CreateJavaVM function pointer type (loaded from libart.so)
+// ---------------------------------------------------------------------------
+using JNI_CreateJavaVM_t = jint (*)(JavaVM**, JNIEnv**, void*);
+
+// ---------------------------------------------------------------------------
+// Helper: build a VM option entry
+// ---------------------------------------------------------------------------
+static JavaVMOption makeOption(const char* str) {
+    JavaVMOption opt;
+    opt.optionString = const_cast<char*>(str);
+    opt.extraInfo = nullptr;
+    return opt;
+}
+
+// ---------------------------------------------------------------------------
+// AppSpawnXRuntime
+// ---------------------------------------------------------------------------
+
+AppSpawnXRuntime::AppSpawnXRuntime()
+    : javaVm_(nullptr),
+      env_(nullptr),
+      appSpawnXInitClass_(nullptr),
+      preloadMethod_(nullptr),
+      initChildMethod_(nullptr) {
+}
+
+AppSpawnXRuntime::~AppSpawnXRuntime() {
+    if (javaVm_) {
+        LOGI("Destroying ART VM");
+        javaVm_->DestroyJavaVM();
+        javaVm_ = nullptr;
+        env_ = nullptr;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// startVm  –  create ART VM and register JNI natives
+// ---------------------------------------------------------------------------
+// Flush-after-log macro for debugging startup
+#define LOGF(fmt, ...) do { fprintf(stderr, "[AppSpawnX][VM] " fmt "\n", ##__VA_ARGS__); fflush(stderr); } while(0)
+
+int AppSpawnXRuntime::startVm() {
+    LOGF("Starting ART VM initialization");
+
+    // Step 1: Use JniInvocation to locate and load libart.so
+    LOGF("Step 1: JniInvocation::Init (dlopen libart.so)...");
+    JniInvocation jniInvocation;
+    if (!jniInvocation.Init(nullptr /* default: libart.so */)) {
+        LOGF("ERROR: JniInvocation::Init failed – cannot load ART runtime library");
+        return -1;
+    }
+    LOGF("Step 1: OK - libart.so loaded");
+
+    // Step 2: Collect VM options
+    std::vector<JavaVMOption> options;
+
+    // Previously forced interpreter mode via -Xint, but the bytecode
+    // interpreter (ExecuteSwitchImplCpp) recurses once per Java method call.
+    // The boot class init chain is hundreds of classes deep, which exhausted
+    // the 32 MB worker stack long before the chain finished. Let ART use the
+    // AOT-compiled methods shipped in boot.oat and fall back to the interpreter
+    // only for methods not covered.
+
+    // Disable sigchain — OH musl's GWP-ASan init conflicts with ART's
+    // signal chain, causing infinite loop in may_init_gwp_asan.
+    // 2026-04-16: removed -Xno-sig-chain; ART Runtime::Start requires sig chain. libsigchain.so is now linked and functional.
+
+    // Boot classpath: read from environment variable set by init.rc
+    const char* bootClassPath = getenv("BOOTCLASSPATH");
+    std::string bootClassPathOpt;
+    if (bootClassPath && bootClassPath[0] != '\0') {
+        bootClassPathOpt = std::string("-Xbootclasspath:") + bootClassPath;
+        options.push_back(makeOption(bootClassPathOpt.c_str()));
+        LOGF("Step 2: BOOTCLASSPATH=%s", bootClassPath);
+    } else {
+        LOGF("Step 2: WARNING - BOOTCLASSPATH not set");
+    }
+
+    // Image location for pre-compiled boot image
+    const char* bootImage = getenv("ANDROID_BOOT_IMAGE");
+    std::string imageOpt;
+    if (bootImage && bootImage[0] != '\0') {
+        imageOpt = std::string("-Ximage:") + bootImage;
+        options.push_back(makeOption(imageOpt.c_str()));
+        LOGF("Step 2: Boot image=%s", bootImage);
+    }
+
+    // Enable verbose startup logging for debugging
+    options.push_back(makeOption("-verbose:startup"));
+
+    // Disable verify for faster startup in development builds
+    // Remove this in production
+    const char* fastDev = getenv("APPSPAWNX_FAST_DEV");
+    if (fastDev && strcmp(fastDev, "1") == 0) {
+        options.push_back(makeOption("-Xverify:none"));
+        LOGW("DEX verification disabled (dev mode)");
+    }
+
+    // GC tuning (disabled for debugging)
+    // options.push_back(makeOption("-XX:HeapGrowthLimit=256m"));
+
+    // Step 3: Fill in JavaVMInitArgs
+    JavaVMInitArgs initArgs;
+    initArgs.version = JNI_VERSION_1_6;
+    initArgs.nOptions = static_cast<jint>(options.size());
+    initArgs.options = options.data();
+    initArgs.ignoreUnrecognized = JNI_TRUE;
+
+    LOGF("Step 3: Creating JavaVM with %d options", initArgs.nOptions);
+    for (int i = 0; i < initArgs.nOptions; i++) {
+        LOGF("  option[%d]: %s", i, initArgs.options[i].optionString);
+    }
+
+    // Step 4: Create the VM
+    LOGF("Step 4: Calling JNI_CreateJavaVM...");
+    jint rc = JNI_CreateJavaVM(&javaVm_, &env_, &initArgs);
+    LOGF("Step 4: JNI_CreateJavaVM returned %d", rc);
+    if (rc != JNI_OK) {
+        LOGF("ERROR: JNI_CreateJavaVM failed, rc=%d", rc);
+        javaVm_ = nullptr;
+        env_ = nullptr;
+        return -1;
+    }
+    LOGF("Step 4: JavaVM created successfully");
+
+    // Step 5: Register native methods (framework JNI bindings)
+    int ret = registerNativeMethods();
+    if (ret != 0) {
+        LOGE("registerNativeMethods failed, ret=%d", ret);
+        return ret;
+    }
+
+    // Step 6: Cache Java class/method references for preload and child init
+    ret = cacheJavaReferences();
+    if (ret != 0) {
+        LOGE("cacheJavaReferences failed, ret=%d", ret);
+        return ret;
+    }
+
+    LOGI("ART VM initialization complete");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// registerNativeMethods  –  link framework JNI methods into the VM
+// ---------------------------------------------------------------------------
+int AppSpawnXRuntime::registerNativeMethods() {
+    LOGI("Registering framework JNI native methods");
+
+    // In a full build, libandroid_runtime.so provides AndroidRuntime::startReg()
+    // which registers all framework JNI methods (Binder, Parcel, Canvas, etc.).
+    //
+    // Strategy: dlopen libandroid_runtime.so and call its registration entry point.
+    void* libRuntime = dlopen("libandroid_runtime.so", RTLD_NOW);
+    if (!libRuntime) {
+        LOGW("Cannot load libandroid_runtime.so: %s", dlerror());
+        LOGW("Framework JNI methods will not be available – "
+             "only basic VM functionality");
+        // Non-fatal: preload will catch missing classes
+        return 0;
+    }
+
+    // The registration entry point used by AndroidRuntime
+    // Signature: int register_jni_procs(const RegJNIRec array[], size_t count, JNIEnv* env)
+    // We look for the exported AndroidRuntime::startReg instead
+    using StartReg_t = int (*)(JNIEnv*);
+    auto startReg = reinterpret_cast<StartReg_t>(
+        dlsym(libRuntime, "_ZN7android14AndroidRuntime8startRegEP7_JNIEnv"));
+
+    if (startReg) {
+        int rc = startReg(env_);
+        if (rc < 0) {
+            LOGE("AndroidRuntime::startReg returned %d", rc);
+            dlclose(libRuntime);
+            return -1;
+        }
+        LOGI("Framework JNI methods registered via AndroidRuntime::startReg");
+    } else {
+        LOGW("AndroidRuntime::startReg symbol not found: %s", dlerror());
+        LOGW("Attempting manual registration of essential JNI methods");
+
+        // Manually register the minimum set of JNI methods needed for boot.
+        // These are the registration functions exported by libandroid_runtime.
+        struct RegEntry {
+            const char* symbol;
+            const char* name;
+        };
+        static const RegEntry essentials[] = {
+            {"register_android_os_Binder",         "Binder"},
+            {"register_android_os_Parcel",         "Parcel"},
+            {"register_android_util_Log",          "Log"},
+            {"register_android_content_res_AssetManager", "AssetManager"},
+        };
+
+        for (const auto& entry : essentials) {
+            using RegFunc_t = int (*)(JNIEnv*);
+            auto fn = reinterpret_cast<RegFunc_t>(dlsym(libRuntime, entry.symbol));
+            if (fn) {
+                int rc = fn(env_);
+                if (rc < 0) {
+                    LOGW("Failed to register %s JNI methods, rc=%d",
+                         entry.name, rc);
+                } else {
+                    LOGD("Registered %s JNI methods", entry.name);
+                }
+            } else {
+                LOGD("Symbol %s not found, skipping", entry.symbol);
+            }
+        }
+    }
+
+    // Keep libandroid_runtime loaded for the lifetime of the process
+    // (do not dlclose – the JNI methods reference its code)
+    LOGI("JNI registration complete");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// cacheJavaReferences  –  locate AppSpawnXInit class and preload/init methods
+// ---------------------------------------------------------------------------
+int AppSpawnXRuntime::cacheJavaReferences() {
+    LOGI("Caching Java class/method references");
+
+    // Find the AppSpawnXInit class that provides preload() and initChild()
+    static const char* kClassName = "com/android/internal/os/AppSpawnXInit";
+
+    jclass localClass = env_->FindClass(kClassName);
+    if (!localClass) {
+        LOGE("Cannot find class %s", kClassName);
+        if (env_->ExceptionCheck()) {
+            env_->ExceptionDescribe();
+            env_->ExceptionClear();
+        }
+        // This is non-fatal during early development when the Java class
+        // may not yet be compiled into the boot image
+        LOGW("AppSpawnXInit not found – preload and initChild will be no-ops");
+        appSpawnXInitClass_ = nullptr;
+        preloadMethod_ = nullptr;
+        initChildMethod_ = nullptr;
+        return 0;
+    }
+
+    // Create a global reference so it survives across JNI frames
+    appSpawnXInitClass_ = reinterpret_cast<jclass>(
+        env_->NewGlobalRef(localClass));
+    env_->DeleteLocalRef(localClass);
+
+    if (!appSpawnXInitClass_) {
+        LOGE("Failed to create global reference for %s", kClassName);
+        return -1;
+    }
+
+    // Cache preload() – static void preload()
+    preloadMethod_ = env_->GetStaticMethodID(
+        appSpawnXInitClass_, "preload", "()V");
+    if (!preloadMethod_) {
+        LOGW("Method preload()V not found in %s", kClassName);
+        if (env_->ExceptionCheck()) {
+            env_->ExceptionDescribe();
+            env_->ExceptionClear();
+        }
+    }
+
+    // Cache initChild() – static void initChild(String procName, String targetClass, int sdkVersion)
+    initChildMethod_ = env_->GetStaticMethodID(
+        appSpawnXInitClass_, "initChild",
+        "(Ljava/lang/String;Ljava/lang/String;I)V");
+    if (!initChildMethod_) {
+        LOGW("Method initChild(String,String,int)V not found in %s", kClassName);
+        if (env_->ExceptionCheck()) {
+            env_->ExceptionDescribe();
+            env_->ExceptionClear();
+        }
+    }
+
+    LOGI("Java references cached successfully");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// preload  –  invoke AppSpawnXInit.preload() to warm up the VM
+// ---------------------------------------------------------------------------
+int AppSpawnXRuntime::preload() {
+    if (!appSpawnXInitClass_ || !preloadMethod_) {
+        LOGW("Preload skipped – AppSpawnXInit class or preload method not available");
+        return -1;
+    }
+
+    LOGI("Calling AppSpawnXInit.preload()...");
+    env_->CallStaticVoidMethod(appSpawnXInitClass_, preloadMethod_);
+
+    if (env_->ExceptionCheck()) {
+        LOGE("Exception during preload:");
+        env_->ExceptionDescribe();
+        env_->ExceptionClear();
+        return -1;
+    }
+
+    LOGI("Preload completed successfully");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// onChildInit  –  post-fork initialization in child process
+// ---------------------------------------------------------------------------
+void AppSpawnXRuntime::onChildInit() {
+    LOGI("Child post-fork initialization starting");
+
+    // Re-attach current thread to the VM if needed.
+    // After fork(), only the forking thread exists in the child.
+    // The JNIEnv from the parent is still valid for this thread.
+    JNIEnv* childEnv = nullptr;
+    jint rc = javaVm_->GetEnv(reinterpret_cast<void**>(&childEnv), JNI_VERSION_1_6);
+    if (rc == JNI_EDETACHED) {
+        rc = javaVm_->AttachCurrentThread(&childEnv, nullptr);
+        if (rc != JNI_OK) {
+            LOGE("Failed to re-attach thread to VM in child, rc=%d", rc);
+            return;
+        }
+        env_ = childEnv;
+        LOGD("Thread re-attached to VM in child process");
+    } else if (rc == JNI_OK) {
+        env_ = childEnv;
+        LOGD("Thread already attached to VM in child process");
+    } else {
+        LOGE("GetEnv failed in child process, rc=%d", rc);
+        return;
+    }
+
+    // Option A (default): Initialize OH IPC connection.
+    // The child process communicates with OH system services via OH IPC
+    // (samgr/softbus) rather than Android Binder. The adapter layer
+    // (OHEnvironment.initialize) handles this setup later in initAdapterLayer().
+    //
+    // Option B (alternative): Start Android Binder thread pool.
+    // This would be needed if the child must also serve as an Android Binder
+    // server. Currently not required since all IPC goes through OH.
+
+    LOGI("Child post-fork initialization complete (OH IPC mode)");
+}
+
+// ---------------------------------------------------------------------------
+// Dedicated VM-worker pthread
+// ---------------------------------------------------------------------------
+struct AppSpawnXRuntime::WorkerState {
+    AppSpawnXRuntime* rt;
+    pthread_t tid;
+    pthread_mutex_t mu;
+    pthread_cond_t  cv;
+    bool ready;
+    int  rc;
+};
+
+static void* vmWorkerEntry(void* arg) {
+    auto* ws = static_cast<AppSpawnXRuntime::WorkerState*>(arg);
+    // Probe actual stack size (informational)
+    pthread_attr_t attr;
+    size_t stackSize = 0;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        pthread_attr_getstacksize(&attr, &stackSize);
+        pthread_attr_destroy(&attr);
+    }
+    fprintf(stderr, "[AppSpawnX][VM] [VmWorker] stack=%zu bytes\n", stackSize); fflush(stderr);
+
+    int rc = ws->rt->startVm();
+    if (rc == 0) {
+        rc = ws->rt->preload();
+    }
+
+    pthread_mutex_lock(&ws->mu);
+    ws->rc = rc;
+    ws->ready = true;
+    pthread_cond_signal(&ws->cv);
+    pthread_mutex_unlock(&ws->mu);
+
+    // Keep the worker alive so the JavaVM's calling-thread JNIEnv stays valid.
+    for (;;) pause();
+    return nullptr;
+}
+
+int AppSpawnXRuntime::startVmAndPreloadOnDedicatedThread() {
+    workerState_ = new WorkerState{this, 0, PTHREAD_MUTEX_INITIALIZER,
+                                   PTHREAD_COND_INITIALIZER, false, -1};
+
+    // Diagnostic: spawn a "SIGSEGV reclaimer" pthread that continuously
+    // reinstalls SIG_DFL for SIGSEGV / SIGBUS while the VM worker is
+    // initializing. Theory: libsigchain→libdfx_signalhandler installs an
+    // OH fault dumper that itself faults while walking the stack through
+    // libffrt, creating an unbounded signal-frame cascade that exhausts the
+    // 128 MB worker stack. Forcing SIG_DFL means any genuine fault during
+    // VM init terminates via kernel immediately — if EXIT=139 with a clean
+    // short stack (not "Fatal signal 11 ... Fault addr = 0xedXX1ff8"), the
+    // handler cascade hypothesis is confirmed.
+    pthread_t reclaimer;
+    pthread_create(&reclaimer, nullptr, [](void*) -> void* {
+        for (int i = 0; i < 500; ++i) {
+            signal(SIGSEGV, SIG_DFL);
+            signal(SIGBUS, SIG_DFL);
+            usleep(10000);  // 10 ms
+        }
+        return nullptr;
+    }, nullptr);
+    pthread_detach(reclaimer);
+    fprintf(stderr, "[AppSpawnX][VM] [Main] SIGSEGV reclaimer pthread started (500x10ms)\n"); fflush(stderr);
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024)  /* 8MB = Android native default */;
+
+    fprintf(stderr, "[AppSpawnX][VM] [Main] Creating VmWorker pthread (8 MB stack)\n"); fflush(stderr);
+    int pc = pthread_create(&workerState_->tid, &attr, vmWorkerEntry, workerState_);
+    pthread_attr_destroy(&attr);
+    if (pc != 0) {
+        LOGE("pthread_create(VmWorker) failed: %d", pc);
+        return -1;
+    }
+
+    pthread_mutex_lock(&workerState_->mu);
+    while (!workerState_->ready) {
+        pthread_cond_wait(&workerState_->cv, &workerState_->mu);
+    }
+    int rc = workerState_->rc;
+    pthread_mutex_unlock(&workerState_->mu);
+    fprintf(stderr, "[AppSpawnX][VM] [Main] VmWorker reported rc=%d\n", rc); fflush(stderr);
+    return rc;
+}
+
+} // namespace appspawnx
