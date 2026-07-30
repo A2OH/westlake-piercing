@@ -53,7 +53,7 @@ else
 fi
 # keep the panel awake for an hour; report only state changes
 i=0
-while [ $i -lt 1800 ]; do
+while [ $i -lt 5400 ]; do   # 3h (was 1800 = 1h; the app vanishing mid-session was just this loop ending)
   awake
   C=$(ls -t /data/service/el1/public/appspawnx/adapter_child_*.stderr 2>/dev/null | head -1)
   W=$(grep -ac WESTLAKE-HWSWAP $C 2>/dev/null)

@@ -16,6 +16,11 @@ public final class WlProbe {
     /** §450: native sink — Android routes System.err to the log framework, not to our fd 2. */
     private static native void nativeLog(String s);
 
+    /** Public entry point for injected app-dex tracing (westlake.WlTrace). */
+    public static void log(String s) {
+        try { nativeLog(s); } catch (Throwable ignored) { }
+    }
+
     /**
      * Called from injected bytecode in noice's catch handlers so the real Throwable is visible.
      *
