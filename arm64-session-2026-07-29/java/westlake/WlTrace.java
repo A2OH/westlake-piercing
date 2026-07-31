@@ -39,6 +39,10 @@ public final class WlTrace {
     public static void s16() { hit("LocalSoundPlayer.d(boolean)"); }
     public static void s17() { hit("LocalSoundPlayer.m(boolean)"); }
     public static void s18() { hit("SoundPlayer.k(State) — state transition"); }
+    public static void s26() { hit("SoundRepository.get: loadFromCache lambda RAN"); }
+    public static void s27() { hit("SoundRepository.get: loadFromNetwork lambda RAN"); }
+    public static void s28() { hit("fetchNetworkBoundResource g.a() ENTER (flow builder)"); }
+
     public static void s24() { hit("SoundMetadataSource.load() ENTER — repository fetch starts"); }
     public static void s25() { hit("loadSoundMetadata: RESUMED past the load (segments in hand)"); }
 
