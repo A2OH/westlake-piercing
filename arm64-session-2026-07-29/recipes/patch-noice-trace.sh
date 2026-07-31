@@ -61,6 +61,13 @@ java -Xmx4g -cp "$DEXLIB_CP:$OUT" InjectTrace "$OUT/merged.dex" "$OUT/traced.dex
   "Ly2/v;:b:14:fix.observeRoom:0" \
   "Ly2/v;:b:0:fix.probeContext:5" \
   "Ly2/v;:e:0:fix.probeContextInTxn:3" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$loadLibraryManifestInCacheStore\$2;:v:87:t0" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$loadLibraryManifestInCacheStore\$2;:v:97:t1" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$loadLibraryManifestInCacheStore\$2;:v:195:t2" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$loadLibraryManifestInCacheStore\$2;:v:260:t3" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$loadLibraryManifestInCacheStore\$2;:v:343:t4" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$loadLibraryManifestInCacheStore\$2;:v:381:t5" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$loadLibraryManifestInCacheStore\$2;:v:446:t6" \
   "Ly2/v;:b:-1:s31" \
   "Lcom/github/ashutoshgngwr/noice/engine/LocalSoundPlayer\$Factory\$buildPlayer\$1;:a:-1:s24" \
   "$LSP:n:30:s25" \

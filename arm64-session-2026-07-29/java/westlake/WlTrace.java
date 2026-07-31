@@ -20,6 +20,14 @@ public final class WlTrace {
     /** Log a VALUE. Injected where the object is already in a known register (see InjectTrace). */
     public static void obj(Object o) { hit("VALUE = " + o); }
 
+    public static void t0() { hit("txn: before dao.e(List)   [@87]"); }
+    public static void t1() { hit("txn: before dao.j(List)   [@97]"); }
+    public static void t2() { hit("txn: before dao.f(z2/i)   [@195]"); }
+    public static void t3() { hit("txn: before dao.g(z2/j) #1 [@260]"); }
+    public static void t4() { hit("txn: before dao.g(z2/j) #2 [@343]"); }
+    public static void t5() { hit("txn: before dao.h(ArrayList) [@381]"); }
+    public static void t6() { hit("txn: before dao.i(ArrayList) [@446]"); }
+
     public static void s0() { hit("SoundPlayerManager.g ENTER"); }
     public static void s1() { hit("SoundPlayerManager.g -> calling SoundPlayer.play()"); }
     public static void s2() { hit("SoundPlayerManager.i ENTER (post-play update)"); }
