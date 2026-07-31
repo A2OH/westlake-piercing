@@ -53,12 +53,13 @@ public final class WestlakeSecureRandomSpi extends SecureRandomSpi {
                 }
             }
         } catch (IOException e) {
-            // A SecureRandom that throws is worse than one that is merely unlucky: callers like
-            // SimpleCache treat the failure as fatal. Fall back to the (non-secure) JVM PRNG rather
-            // than take the process down; these values are cache UIDs, not key material.
-            System.err.println("[WESTLAKE-474] /dev/urandom unavailable (" + e + "), falling back");
+            // ★FAIL CLOSED. An earlier version degraded to java.util.Random here so callers would not
+            // crash. That is wrong: this SPI is registered as SHA1PRNG/NativePRNG/DRBG, so anything
+            // in the process asking for secure bytes -- key material included -- would silently get
+            // predictable ones. A caller that cannot get entropy must be told so.
+            System.err.println("[WESTLAKE-474] /dev/urandom unavailable: " + e);
             System.err.flush();
-            new java.util.Random().nextBytes(bytes);
+            throw new java.lang.IllegalStateException("no entropy source available", e);
         }
     }
 
