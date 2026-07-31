@@ -453,7 +453,11 @@ extern "C" int register_MediaCodec_shim(JNIEnv* env) {
     if (env->ExceptionCheck()) env->ExceptionClear();
     MCLOG("register MediaCodec rc=%d", rc);
 
+    // §495: this half had NO logging, so when MediaCodec registered fine but MediaCodecList did not,
+    // the shim still reported success and ExoPlayer went on to abort inside getSupportedTypes.
     jclass mcl = env->FindClass("android/media/MediaCodecList");
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    MCLOG("FindClass(MediaCodecList) -> %p", (void*)mcl);
     if (mcl) {
         JNINativeMethod ml[] = {
             {"native_init","()V",(void*)mclInit},
@@ -466,8 +470,20 @@ extern "C" int register_MediaCodec_shim(JNIEnv* env) {
             {"getCodecCapabilities","(ILjava/lang/String;)Landroid/media/MediaCodecInfo$CodecCapabilities;",(void*)mclGetCaps},
             {"native_getGlobalSettings","()Ljava/util/Map;",(void*)mclGlobalSettings},
         };
-        env->RegisterNatives(mcl, ml, sizeof(ml)/sizeof(ml[0]));
+        int rc2 = env->RegisterNatives(mcl, ml, sizeof(ml)/sizeof(ml[0]));
         if (env->ExceptionCheck()) env->ExceptionClear();
+        MCLOG("register MediaCodecList rc=%d (%d methods)", rc2, (int)(sizeof(ml)/sizeof(ml[0])));
+        // A nonzero rc means a signature did not match; report which ones exist so the mismatch is
+        // identifiable rather than silent.
+        if (rc2 != 0) {
+            for (size_t i = 0; i < sizeof(ml)/sizeof(ml[0]); i++) {
+                int one = env->RegisterNatives(mcl, &ml[i], 1);
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                MCLOG("  %s%s -> rc=%d", ml[i].name, ml[i].signature, one);
+            }
+        }
+    } else {
+        MCERR("MediaCodecList class NOT FOUND -- its natives stay unbound and ExoPlayer will abort");
     }
     return 0;
 }
