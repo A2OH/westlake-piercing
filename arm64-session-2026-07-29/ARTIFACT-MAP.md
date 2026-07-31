@@ -43,3 +43,27 @@ Neither copy is in version control; make a durable backup before touching the bo
 - `/data/local/tmp/asx/libicuuc.so`, `libicui18n.so` — ICU **66**; exported symbols carry a `_66`
   suffix (`uregex_open_66`, `ucnv_open_66`). `ICU_DATA=/data/local/tmp/asx` holds `icudt66l.dat`.
 - Two touch nodes: `event2` (`gsl680_tp`), `event5` (`VSoC touchscreen`) — run a forwarder on each.
+
+## ⚠️Recipes that exist here but are deliberately NOT deployed
+
+These were written while diagnosing the audio stall. They are hypothesis tests and instrumentation,
+not fixes, and each changes behaviour beyond the bug being chased. Do not deploy them casually.
+
+| Recipe / tool | What it changes | Why it is not deployed |
+|---|---|---|
+| `recipes/patch-framework-noop.sh` (§478) | blanks `MediaRouter.updateWifiDisplayStatus`, `getWifiDisplayStatusCode`, `isWifiDisplayEnabled` | it edits the platform purely to stop inert throws saturating libart's 40-slot probe — instrumentation, not a fix |
+| `recipes/patch-noice-room.sh` (§485/§486) | makes the sound-metadata DAO skip `inTransaction`, then bypass `CoroutinesRoom` entirely | alters the app's DB transaction semantics; **neither variant worked** |
+| `recipes/patch-noice-trace.sh` (§480) | injects ~34 trace call sites into the app dex | a debug build; useful to re-apply while investigating, never to leave on the device |
+
+Device state was restored from the on-device backups and verified by md5:
+```
+noice.apk     <- noice.apk.pre480          e8ba750683d4b8392ae915074552a484
+framework.jar <- framework.jar.bak-pre478  aef019e7e2599e2374ee2fe292e7b004
+```
+Both match what was deployed before this session's diagnosis, with the §440 app-dex and §464
+framework surgery still in place.
+
+**Still deployed, and intended to be** — each blocked the play path and supplies a genuinely missing
+platform piece rather than changing behaviour: §470 charset handle adoption, §471
+`android.media.MediaServiceManager`, §473 generated impls in place of Proxies, §474 `SecureRandom`,
+§476 `power`+`thermalservice`, §479 `media_router`.
