@@ -58,8 +58,9 @@ java -Xmx4g -cp "$DEXLIB_CP:$OUT" InjectTrace "$OUT/merged.dex" "$OUT/traced.dex
   "Lcom/github/ashutoshgngwr/noice/engine/MediaPlayer;:A:7:mpstate:0" \
   "$LSP:n:-1:s20" \
   "$LSP:<init>:24:scope:5" \
-  "$LSP:<init>:-1:probeExecutors" \
-  "Ly2/v;:b:14:fix.probeRoom:0" \
+  "Ly2/v;:b:14:fix.observeRoom:0" \
+  "Ly2/v;:b:0:fix.probeContext:5" \
+  "Ly2/v;:e:0:fix.probeContextInTxn:3" \
   "Ly2/v;:b:-1:s31" \
   "Lcom/github/ashutoshgngwr/noice/engine/LocalSoundPlayer\$Factory\$buildPlayer\$1;:a:-1:s24" \
   "$LSP:n:30:s25" \

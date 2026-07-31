@@ -134,6 +134,124 @@ public final class WlFix {
         return sb.append(']').toString();
     }
 
+    /**
+     * §490 — OBSERVE ONLY. The earlier probeRoom() submitted a task to the transaction executor and
+     * then dumped that executor's queue, so the queue length it reported was probably its OWN
+     * runnable. A probe must observe before it acts. This one never executes anything.
+     */
+    private static boolean sObserved;
+
+    public static synchronized void observeRoom(Object db) {
+        if (sObserved || db == null) return;
+        sObserved = true;
+        try {
+            log("observe: db=" + db.getClass().getSimpleName()
+                    + " thread=" + Thread.currentThread().getName());
+            Class<?> c = db.getClass();
+            while (c != null && c != Object.class) {
+                for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                    if (!java.util.concurrent.Executor.class.isAssignableFrom(f.getType())) continue;
+                    f.setAccessible(true);
+                    Object ex = f.get(db);
+                    if (ex == null) continue;
+                    StringBuilder sb = new StringBuilder("  " + f.getName() + " " + ex.getClass().getName() + " {");
+                    for (java.lang.reflect.Field g : ex.getClass().getDeclaredFields()) {
+                        g.setAccessible(true);
+                        Object v = g.get(ex);
+                        String d;
+                        if (v instanceof java.util.Collection) d = "size=" + ((java.util.Collection<?>) v).size();
+                        else if (v == null) d = "null";
+                        else d = v.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(v));
+                        sb.append(' ').append(g.getName()).append('=').append(d);
+                    }
+                    log(sb.append(" }").toString());
+                    for (java.lang.reflect.Field g : ex.getClass().getDeclaredFields()) {
+                        g.setAccessible(true);
+                        Object v = g.get(ex);
+                        if (v instanceof Runnable) namesInside(v, "  active-task");
+                    }
+                }
+                c = c.getSuperclass();
+            }
+        } catch (Throwable t) { log("observeRoom failed: " + t); }
+    }
+
+    /**
+     * §491 — name the stuck transaction. Walk the active runnable's captured fields breadth-first,
+     * reporting anything belonging to the app (com.github...), which is what identifies WHICH
+     * withTransaction block is parked. R8 merges lambdas, so only the captured graph identifies it.
+     */
+    public static void namesInside(Object root, String label) {
+        try {
+            java.util.ArrayDeque<Object> q = new java.util.ArrayDeque<Object>();
+            java.util.Set<Object> seen = java.util.Collections.newSetFromMap(
+                    new java.util.IdentityHashMap<Object, Boolean>());
+            java.util.Set<String> hits = new java.util.LinkedHashSet<String>();
+            q.add(root); seen.add(root);
+            int visited = 0;
+            while (!q.isEmpty() && visited < 400) {
+                Object cur = q.poll(); visited++;
+                Class<?> k = cur.getClass();
+                String n = k.getName();
+                if (n.startsWith("com.github") || n.contains("Repository") || n.contains("Dao")) hits.add(n);
+                if (n.startsWith("java.") || n.startsWith("kotlin.jvm.internal")) continue;
+                for (java.lang.reflect.Field f : k.getDeclaredFields()) {
+                    try {
+                        f.setAccessible(true);
+                        Object v = f.get(cur);
+                        if (v == null || v.getClass().isPrimitive()) continue;
+                        if (seen.add(v)) q.add(v);
+                    } catch (Throwable ignored) { }
+                }
+            }
+            log(label + " app objects reachable from the stuck task: " + hits);
+        } catch (Throwable t) { log("namesInside failed: " + t); }
+    }
+
+    /**
+     * §490b — the decisive question codex posed: at the moment the DAO runs, does the coroutine
+     * context still carry Room's TransactionElement, and which dispatcher is selected?
+     * CoroutineContext.toString() lists its elements, so one line answers both.
+     */
+    private static boolean sCtxProbed;
+    private static boolean sCtxProbed2;
+
+    /** Same probe, used INSIDE the transaction block, so the two can be told apart. */
+    public static synchronized void probeContextInTxn(Object continuation) {
+        if (sCtxProbed2) return;
+        sCtxProbed2 = true;
+        log("--- inside withTransaction ---");
+        sCtxProbed = false;
+        probeContext(continuation);
+        sCtxProbed = true;
+    }
+
+    public static synchronized void probeContext(Object continuation) {
+        if (sCtxProbed) return;
+        sCtxProbed = true;
+        try {
+            log("dao thread = " + Thread.currentThread().getName());
+            if (continuation == null) { log("continuation is null"); return; }
+            // ★Do NOT look for "getContext": kotlin.coroutines.Continuation is minified here (it is
+            // n7.c, and getContext() became c()). The RETURN TYPE survives, because it belongs to the
+            // Kotlin runtime rather than the app, so match on that instead.
+            java.lang.reflect.Method m = null;
+            for (java.lang.reflect.Method cand : continuation.getClass().getMethods()) {
+                if (cand.getParameterTypes().length == 0
+                        && "kotlin.coroutines.CoroutineContext".equals(cand.getReturnType().getName())) {
+                    m = cand; break;
+                }
+            }
+            if (m == null) {
+                log("no CoroutineContext getter on " + continuation.getClass().getName());
+                return;
+            }
+            m.setAccessible(true);
+            Object ctx = m.invoke(continuation);
+            log("dao coroutineContext = " + ctx);
+        } catch (Throwable t) { log("probeContext failed: " + t); }
+    }
+
     /** Submit one task to each executor and report whether it actually ran. */
     public static synchronized void probeExecutors() {
         if (sProbed) return;
