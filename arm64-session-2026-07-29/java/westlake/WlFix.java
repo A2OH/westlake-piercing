@@ -94,6 +94,9 @@ public final class WlFix {
                         else desc = String.valueOf(v);
                         if (desc != null && desc.length() > 80) desc = desc.substring(0, 80) + "...";
                         sb.append(' ').append(g.getName()).append('=').append(desc);
+                        // If this field holds the ACTIVE runnable, reach inside it: R8 merges lambdas
+                        // into one class, so the class name says nothing — the captured fields do.
+                        if (v instanceof Runnable) sb.append(describeRunnable((Runnable) v));
                     }
                     log(sb.append(" }").toString());
                 }
@@ -102,6 +105,33 @@ public final class WlFix {
         } catch (Throwable t) {
             log("dumpTransactionExecutor failed: " + t);
         }
+    }
+
+    /** Unwrap a merged-lambda Runnable far enough to name what is actually stuck. */
+    private static String describeRunnable(Runnable r) {
+        StringBuilder sb = new StringBuilder("[");
+        try {
+            Object cur = r;
+            for (int depth = 0; depth < 3 && cur != null; depth++) {
+                sb.append(depth > 0 ? " -> " : "").append(cur.getClass().getName()).append('(');
+                Object next = null;
+                for (java.lang.reflect.Field f : cur.getClass().getDeclaredFields()) {
+                    f.setAccessible(true);
+                    Object v = f.get(cur);
+                    String d = (v == null) ? "null" : v.getClass().getName();
+                    if (v instanceof Integer || v instanceof Boolean || v instanceof String) d = String.valueOf(v);
+                    sb.append(f.getName()).append('=').append(d).append(' ');
+                    // follow the wrapped command / receiver one level down
+                    if (next == null && v != null && (v instanceof Runnable
+                            || v.getClass().getName().startsWith("com.github"))) next = v;
+                }
+                sb.append(')');
+                cur = next;
+            }
+        } catch (Throwable t) {
+            sb.append("unwrap failed: ").append(t);
+        }
+        return sb.append(']').toString();
     }
 
     /** Submit one task to each executor and report whether it actually ran. */
