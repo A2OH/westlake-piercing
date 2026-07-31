@@ -82,9 +82,12 @@ public class InjectTrace {
                                         new ImmutableMethodReference(TRACE, "obj",
                                                 Collections.<CharSequence>singletonList("Ljava/lang/Object;"), "V")));
                             } else {
+                                // A label of "probeExecutors" targets westlake.WlFix instead of
+                                // WlTrace, so one-off diagnostics can live in their own class.
+                                String owner = "probeExecutors".equals(s.label) ? "Lwestlake/WlFix;" : TRACE;
                                 mi.addInstruction(at, new com.android.tools.smali.dexlib2.builder.instruction
                                         .BuilderInstruction35c(Opcode.INVOKE_STATIC, 0, 0, 0, 0, 0, 0,
-                                        new ImmutableMethodReference(TRACE, s.label,
+                                        new ImmutableMethodReference(owner, s.label,
                                                 Collections.<CharSequence>emptyList(), "V")));
                             }
                             injected++;

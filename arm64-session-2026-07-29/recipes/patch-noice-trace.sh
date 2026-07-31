@@ -23,8 +23,10 @@ J
 # ★WlTrace must NOT be compiled against android.jar: it is plain Java and android.jar lacks
 # LambdaMetafactory, which breaks anything the JDK desugars.
 javac -nowarn -source 8 -target 8 -d "$OUT/cls" \
-  "$OUT/stub/adapter/compat/WlProbe.java" "$HERE/../java/westlake/WlTrace.java" 2>/dev/null
-"$D8" --release --min-api 30 --output "$OUT/dex" "$OUT/cls/westlake/WlTrace.class"
+  "$OUT/stub/adapter/compat/WlProbe.java" "$HERE/../java/westlake/WlTrace.java" \
+  "$HERE/../java/westlake/WlFix.java" 2>/dev/null
+"$D8" --release --min-api 30 --output "$OUT/dex" \
+  "$OUT/cls/westlake/WlTrace.class" $(ls "$OUT"/cls/westlake/WlFix*.class 2>/dev/null)
 test -f "$OUT/dex/classes.dex" || { echo "FAIL: d8 produced no dex"; exit 1; }
 
 javac -nowarn -cp "$DEXLIB_CP" -d "$OUT" "$HERE/../tools/DexMerge.java" "$HERE/../tools/InjectTrace.java"
@@ -56,9 +58,12 @@ java -Xmx4g -cp "$DEXLIB_CP:$OUT" InjectTrace "$OUT/merged.dex" "$OUT/traced.dex
   "Lcom/github/ashutoshgngwr/noice/engine/MediaPlayer;:A:7:mpstate:0" \
   "$LSP:n:-1:s20" \
   "$LSP:<init>:24:scope:5" \
+  "$LSP:<init>:-1:probeExecutors" \
   "Lcom/github/ashutoshgngwr/noice/engine/LocalSoundPlayer\$Factory\$buildPlayer\$1;:a:-1:s24" \
   "$LSP:n:30:s25" \
   "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$get\$1;:v:-1:s26" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$get\$1;:v:18:s29" \
+  "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$get\$1;:v:24:s30" \
   "Lcom/github/ashutoshgngwr/noice/repository/SoundRepository\$get\$2;:v:-1:s27" \
   "Lcom/github/ashutoshgngwr/noice/repository/g;:a:-1:s28" \
   "$LSP:<init>:26:job:3" \
