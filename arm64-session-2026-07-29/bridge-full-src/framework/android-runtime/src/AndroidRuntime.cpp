@@ -39,6 +39,13 @@
 #include <hilog/log.h>
 #include <nativehelper/JNIHelp.h>  // jniRegisterNativeMethods (L2)
 
+// §494: declared at FILE scope and with C linkage. It cannot go inside the function -- C++ forbids
+// extern "C" in a function body -- and a plain C++ declaration would mangle to
+// _ZN7android24register_MediaCodec_shimEP7_JNIEnv, which does not exist. The bridge links with
+// --unresolved-symbols=ignore-all, so that mistake does not fail the build: it fails at LOAD time and
+// the entire bridge stops registering (zero startReg markers in the child log).
+extern "C" int register_MediaCodec_shim(JNIEnv* env);
+
 namespace android {
 
 // Cached JavaVM so ApkAssets.cpp's AndroidRuntime::getJNIEnv() works.
@@ -2857,6 +2864,17 @@ int AndroidRuntime::startReg(JNIEnv* env) {
     wl_register_tls_natives(env);       // WESTLAKE §441 — real TLS over OHOS OpenSSL
     wl_register_probe_log(env);         // WESTLAKE §450 — native log sink for app code
     wl_register_audiopolicy_natives(env); // WESTLAKE §468 — unblock AudioAttributes/<clinit>
+    // §494: the MediaCodec/MediaCodecList shim was fully implemented in
+    // framework/core/jni/oh_mediacodec_shim.cpp but only wired into adapter_bridge.cpp's JNI_OnLoad,
+    // which does NOT run in the appspawn-x CHILD architecture -- none of that function's other
+    // registrations appear in the child log either. So MediaCodecList's natives stayed unbound and
+    // ExoPlayer ABORTED the process inside MediaCodecList.getSupportedTypes while building its codec
+    // list. Register it here, where every working fix in this port registers.
+    {
+        int rc = register_MediaCodec_shim(env);
+        fprintf(stderr, "[WESTLAKE-494] register_MediaCodec_shim rc=%d\n", rc);
+        fflush(stderr);
+    }
     wl_install_media_session(env);       // WESTLAKE §467 — media_session for MediaSession
     wl_install_system_services(env);     // WESTLAKE §476 — power + thermalservice for PowerManager
     wl_install_shortcut_service(env);   // WESTLAKE §454 — real IShortcutService (Presets page)
