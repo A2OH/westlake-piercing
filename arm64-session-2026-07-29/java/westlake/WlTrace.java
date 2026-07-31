@@ -39,6 +39,9 @@ public final class WlTrace {
     public static void s16() { hit("LocalSoundPlayer.d(boolean)"); }
     public static void s17() { hit("LocalSoundPlayer.m(boolean)"); }
     public static void s18() { hit("SoundPlayer.k(State) — state transition"); }
+    public static void s31() { hit("y2/v.b ENTER — DAO impl reached"); }
+    public static void s32() { hit("y2/v.b: Callable.call() returned — SQL ran"); }
+
     public static void s29() { hit("cache lambda: about to call Room suspend DAO query"); }
     public static void s30() { hit("cache lambda: Room DAO query RESUMED (row in hand)"); }
 

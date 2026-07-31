@@ -24,6 +24,86 @@ public final class WlFix {
         try { adapter.compat.WlProbe.log("[WESTLAKE-483] " + s); } catch (Throwable ignored) { }
     }
 
+    /**
+     * §484 — probe the RoomDatabase's OWN executors, which is what CoroutinesRoom.execute uses.
+     * Generic pools were proven to work (§483), so the question is whether THIS database's executor
+     * drains. Called with the RoomDatabase instance taken straight from the DAO, so no name lookup is
+     * needed (the app is R8-minified and androidx class names are gone).
+     */
+    private static boolean sRoomProbed;
+
+    public static synchronized void probeRoom(Object db) {
+        if (sRoomProbed || db == null) return;
+        sRoomProbed = true;
+        try {
+            log("db = " + db.getClass().getName());
+            Class<?> c = db.getClass();
+            int found = 0;
+            while (c != null && c != Object.class) {
+                for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                    if (!java.util.concurrent.Executor.class.isAssignableFrom(f.getType())) continue;
+                    f.setAccessible(true);
+                    Object ex = f.get(db);
+                    if (ex == null) { log("  executor field " + f.getName() + " = null"); found++; continue; }
+                    final java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
+                    try {
+                        ((java.util.concurrent.Executor) ex).execute(new Runnable() {
+                            @Override public void run() { l.countDown(); }
+                        });
+                    } catch (Throwable t) {
+                        log("  executor " + f.getName() + " (" + ex.getClass().getName() + ") REJECTED: " + t);
+                        found++; continue;
+                    }
+                    boolean ran = l.await(3, java.util.concurrent.TimeUnit.SECONDS);
+                    log("  executor " + f.getName() + " (" + ex.getClass().getName() + ") ran=" + ran);
+                    found++;
+                }
+                c = c.getSuperclass();
+            }
+            if (found == 0) log("  no Executor-typed fields found on the database");
+            dumpTransactionExecutor(db);
+        } catch (Throwable t) {
+            log("probeRoom FAILED: " + t);
+        }
+    }
+
+    /**
+     * §484b — Room's TransactionExecutor serialises tasks: it keeps one "active" runnable and only
+     * schedules the next when that one finishes. If a task never completes, everything queued behind
+     * it waits forever — which is exactly what a dead executor with a growing queue looks like.
+     * Dump its internals so we can tell "wedged on an active task" from "never started".
+     */
+    private static void dumpTransactionExecutor(Object db) {
+        try {
+            Class<?> c = db.getClass();
+            while (c != null && c != Object.class) {
+                for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                    if (!java.util.concurrent.Executor.class.isAssignableFrom(f.getType())) continue;
+                    f.setAccessible(true);
+                    Object ex = f.get(db);
+                    if (ex == null) continue;
+                    String cn = ex.getClass().getName();
+                    if (cn.startsWith("java.util.concurrent")) continue;   // the raw pool, not the wrapper
+                    StringBuilder sb = new StringBuilder("  " + f.getName() + " " + cn + " {");
+                    for (java.lang.reflect.Field g : ex.getClass().getDeclaredFields()) {
+                        g.setAccessible(true);
+                        Object v = g.get(ex);
+                        String desc;
+                        if (v instanceof java.util.Collection) desc = "size=" + ((java.util.Collection<?>) v).size();
+                        else if (v instanceof java.util.Queue) desc = "queue=" + ((java.util.Queue<?>) v).size();
+                        else desc = String.valueOf(v);
+                        if (desc != null && desc.length() > 80) desc = desc.substring(0, 80) + "...";
+                        sb.append(' ').append(g.getName()).append('=').append(desc);
+                    }
+                    log(sb.append(" }").toString());
+                }
+                c = c.getSuperclass();
+            }
+        } catch (Throwable t) {
+            log("dumpTransactionExecutor failed: " + t);
+        }
+    }
+
     /** Submit one task to each executor and report whether it actually ran. */
     public static synchronized void probeExecutors() {
         if (sProbed) return;

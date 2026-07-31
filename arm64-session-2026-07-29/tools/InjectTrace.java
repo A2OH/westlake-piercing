@@ -77,9 +77,14 @@ public class InjectTrace {
                                 continue;
                             }
                             if (s.reg >= 0) {
+                                // "fix.<name>" targets westlake.WlFix.<name>(Object); anything else
+                                // goes to WlTrace.obj(Object), which just prints the value.
+                                boolean toFix = s.label.startsWith("fix.");
+                                String owner = toFix ? "Lwestlake/WlFix;" : TRACE;
+                                String name  = toFix ? s.label.substring(4) : "obj";
                                 mi.addInstruction(at, new com.android.tools.smali.dexlib2.builder.instruction
                                         .BuilderInstruction35c(Opcode.INVOKE_STATIC, 1, s.reg, 0, 0, 0, 0,
-                                        new ImmutableMethodReference(TRACE, "obj",
+                                        new ImmutableMethodReference(owner, name,
                                                 Collections.<CharSequence>singletonList("Ljava/lang/Object;"), "V")));
                             } else {
                                 // A label of "probeExecutors" targets westlake.WlFix instead of
