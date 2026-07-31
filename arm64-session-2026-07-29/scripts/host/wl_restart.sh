@@ -13,7 +13,11 @@ for i in 1 2 3 4 5 6 7 8; do
   [ "$N" = "0" ] && break
 done
 $HDC shell "rm -f /data/service/el1/public/appspawnx/adapter_child_*.stderr /data/local/tmp/run_*.log" >/dev/null 2>&1
-$HDC shell "nohup sh /data/local/tmp/run406.sh > $LOG 2>&1 &" >/dev/null 2>&1
+# ★setsid, not just nohup: run406.sh launched from an hdc shell stays in that
+# session's process group, so a dropped hdc connection (WSL vsock errors are
+# common here) kills appspawn-x and the app with it -- the log just stops
+# mid-render with no crash. setsid detaches it so it survives.
+$HDC shell "setsid nohup sh /data/local/tmp/run406.sh > $LOG 2>&1 &" >/dev/null 2>&1
 echo "$LOG" > $WL_OUT/runlog
 for i in $(seq 1 60); do
   L=$($HDC shell "tail -1 $LOG" 2>/dev/null | tr -d '\r')
