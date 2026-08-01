@@ -252,6 +252,32 @@ public final class WlFix {
         } catch (Throwable t) { log("probeContext failed: " + t); }
     }
 
+    /**
+     * §500 — log the cause ExoPlayer wraps in an ExoPlaybackException. The app's throw probe is
+     * saturated by unrelated MediaRouter noise, so playback failures are otherwise invisible; this
+     * catches the reason at construction time instead of relying on the probe.
+     */
+    private static int sCauses;
+
+    public static synchronized void logCause(Object cause) {
+        if (sCauses++ > 8) return;
+        if (cause == null) { log("ExoPlaybackException cause = null"); return; }
+        StringBuilder sb = new StringBuilder("ExoPlaybackException cause = ");
+        Throwable t = (cause instanceof Throwable) ? (Throwable) cause : null;
+        if (t == null) { sb.append(cause.getClass().getName()); log(sb.toString()); return; }
+        for (Throwable c = t; c != null && sb.length() < 1200; c = c.getCause()) {
+            sb.append(c.getClass().getName());
+            if (c.getMessage() != null) sb.append(": ").append(c.getMessage());
+            StackTraceElement[] fr = c.getStackTrace();
+            if (fr != null && fr.length > 0) {
+                for (int i = 0; i < fr.length && i < 6; i++) sb.append("\n\tat ").append(fr[i]);
+            }
+            if (c.getCause() == c) break;
+            if (c.getCause() != null) sb.append("\n  caused by ");
+        }
+        log(sb.toString());
+    }
+
     /** Submit one task to each executor and report whether it actually ran. */
     public static synchronized void probeExecutors() {
         if (sProbed) return;

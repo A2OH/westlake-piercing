@@ -61,9 +61,25 @@ public class InjectTrace {
                     // against ONE builder. Two bugs live here if you do it naively: rebuilding the
                     // builder per site keeps only the last injection, and inserting low-to-high
                     // shifts every later index by the number already inserted.
+                    // A site's method field may carry a parameter signature, e.g.
+                    //   <init>(ILjava/lang/Throwable;I)V
+                    // Overloads do NOT share a register layout: for ExoPlaybackException, v11 holds
+                    // the Throwable in the 3-arg ctor but an int in the 8-arg one, so a name-only
+                    // match would inject a type-unsafe call into the wrong overload.
                     List<Site> mine = new ArrayList<>();
                     for (Site s : sites) {
-                        if (c.getType().equals(s.cls) && m.getName().equals(s.method)) mine.add(s);
+                        if (!c.getType().equals(s.cls)) continue;
+                        int paren = s.method.indexOf('(');
+                        if (paren < 0) {
+                            if (m.getName().equals(s.method)) mine.add(s);
+                        } else {
+                            String wantName = s.method.substring(0, paren);
+                            if (!m.getName().equals(wantName)) continue;
+                            StringBuilder sig = new StringBuilder("(");
+                            for (CharSequence pt : m.getParameterTypes()) sig.append(pt);
+                            sig.append(')').append(m.getReturnType());
+                            if (sig.toString().equals(s.method.substring(paren))) mine.add(s);
+                        }
                     }
                     if (!mine.isEmpty() && m.getImplementation() != null) {
                         Collections.sort(mine, new Comparator<Site>() {
