@@ -28,6 +28,11 @@ public final class WlTrace {
     public static void t5() { hit("txn: before dao.h(ArrayList) [@381]"); }
     public static void t6() { hit("txn: before dao.i(ArrayList) [@446]"); }
 
+    public static void q0() { hit("async adapter getInputBuffer (mediacodec/a.f)"); }
+    public static void q1() { hit("async ENQUEUER handleMessage (u3/a) — queueInputBuffer path"); }
+    public static void q2() { hit("sync adapter queueInputBuffer (mediacodec/f.k)"); }
+    public static void q3() { hit("sync adapter dequeueInputBuffer (mediacodec/f.i)"); }
+
     public static void s0() { hit("SoundPlayerManager.g ENTER"); }
     public static void s1() { hit("SoundPlayerManager.g -> calling SoundPlayer.play()"); }
     public static void s2() { hit("SoundPlayerManager.i ENTER (post-play update)"); }

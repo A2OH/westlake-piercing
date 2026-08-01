@@ -37,6 +37,10 @@ FOCUS="Lcom/github/ashutoshgngwr/noice/engine/a;"
 SVC="Lcom/github/ashutoshgngwr/noice/service/SoundPlaybackService;"
 LSP="Lcom/github/ashutoshgngwr/noice/engine/LocalSoundPlayer;"
 java -Xmx4g -cp "$DEXLIB_CP:$OUT" InjectTrace "$OUT/merged.dex" "$OUT/traced.dex" \
+  "Lcom/google/android/exoplayer2/mediacodec/a;:f:-1:q0" \
+  "Lu3/a;:handleMessage:-1:q1" \
+  "Lcom/google/android/exoplayer2/mediacodec/f;:k:-1:q2" \
+  "Lcom/google/android/exoplayer2/mediacodec/f;:i:-1:q3" \
   "$SPM:g:-1:s0" \
   "$SPM:g:67:s1" \
   "$SPM:i:-1:s2" \
