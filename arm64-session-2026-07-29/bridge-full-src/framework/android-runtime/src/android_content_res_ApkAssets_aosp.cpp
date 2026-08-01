@@ -86,7 +86,26 @@ static jlong CreateGuardedApkAssets(std::unique_ptr<const ApkAssets> assets) {
     return reinterpret_cast<jlong>(guarded_assets);
 }
 
+// §501: `delete &apk_assets` destroys the Guarded wrapper, whose unique_ptr then DELETES the
+// ApkAssets directly. On this board ApkAssets derives from RefBase, and deleting a RefBase object
+// outside sp<>/decStrong trips its own assertion:
+//     RefBase: object 0x... with strong count 1 deleted. Double owned?
+//     -> __android_log_assert -> abort()
+// It fires on the FinalizerDaemon whenever GC collects an ApkAssets, which is why the app was dying
+// at seemingly random points several minutes in, with no crash marker in the child log and no
+// "Runtime aborting" — the abort happens in libutils, below ART. Faultlog frames:
+//     FinalizerDaemon: NativeDestroy -> ApkAssets::~ApkAssets -> RefBase::~RefBase -> abort
+//
+// Release the pointer instead of deleting it. There are only a handful of ApkAssets in a process
+// (framework-res, the app apk, overlays) and they live as long as the process anyway, so leaking
+// them is harmless; aborting the process is not. ★Do NOT "fix" this by calling decStrong either:
+// the object was never incStrong'd here, so that would just move the assert.
 static void DeleteGuardedApkAssets(Guarded<std::unique_ptr<const ApkAssets>>& apk_assets) {
+    {
+        auto scoped = ScopedLock(apk_assets);
+        // hand ownership away without running ~ApkAssets
+        (void)const_cast<std::unique_ptr<const ApkAssets>&>(*scoped).release();
+    }
     delete &apk_assets;
 }
 
