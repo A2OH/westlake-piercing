@@ -33,6 +33,11 @@ public final class WlTrace {
     public static void q2() { hit("sync adapter queueInputBuffer (mediacodec/f.k)"); }
     public static void q3() { hit("sync adapter dequeueInputBuffer (mediacodec/f.i)"); }
 
+    public static void p0() { hit("MediaPlayerImpl.L() = PLAY (prepare + setPlayWhenReady)"); }
+    public static void p1() { hit("MediaPlayerImpl.G() = PAUSE"); }
+    public static void p2() { hit("MediaPlayerImpl.C() = ExoPlayer ERROR listener"); }
+    public static void p3() { hit("MediaPlayerImpl.U() = RELEASE"); }
+
     public static void s0() { hit("SoundPlayerManager.g ENTER"); }
     public static void s1() { hit("SoundPlayerManager.g -> calling SoundPlayer.play()"); }
     public static void s2() { hit("SoundPlayerManager.i ENTER (post-play update)"); }

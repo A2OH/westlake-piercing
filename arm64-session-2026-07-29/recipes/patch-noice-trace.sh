@@ -37,6 +37,10 @@ FOCUS="Lcom/github/ashutoshgngwr/noice/engine/a;"
 SVC="Lcom/github/ashutoshgngwr/noice/service/SoundPlaybackService;"
 LSP="Lcom/github/ashutoshgngwr/noice/engine/LocalSoundPlayer;"
 java -Xmx4g -cp "$DEXLIB_CP:$OUT" InjectTrace "$OUT/merged.dex" "$OUT/traced.dex" \
+  "Lcom/github/ashutoshgngwr/noice/engine/b;:L:-1:p0" \
+  "Lcom/github/ashutoshgngwr/noice/engine/b;:G:-1:p1" \
+  "Lcom/github/ashutoshgngwr/noice/engine/b;:C:-1:p2" \
+  "Lcom/github/ashutoshgngwr/noice/engine/b;:U:-1:p3" \
   "Lcom/google/android/exoplayer2/ExoPlaybackException;:<init>(ILjava/lang/Throwable;I)V:0:fix.logCause:11" \
   "Lcom/google/android/exoplayer2/mediacodec/a;:f:-1:q0" \
   "Lu3/a;:handleMessage:-1:q1" \
