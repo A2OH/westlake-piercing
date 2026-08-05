@@ -14,6 +14,15 @@ import java.io.File;
 import java.util.*;
 
 public class DexRewrite {
+    // §524: was 3 (§440's q6/b.a, q6/b.b, g9/f.value). Now 4, adding q6/b.c — cdnApi.resource(path),
+    // which CdnSoundDataSource.open() invokes for every audio segment and is therefore the
+    // most-executed Proxy call during playback.
+    // ⚠️A static scan finds NINETEEN invoke-interface sites on the four Retrofit service interfaces
+    // NoiceApiClient proxies (q6/a account, q6/b cdn, q6/c internal-account, q6/d subscription).
+    // The 15 still unpatched are latent §436 crashes on the sign-in / subscription / token-refresh
+    // paths. They need per-arity helpers (sites use 2..5 registers) — add them WITH evidence, one at
+    // a time, rather than in a batch: this assertion exists so the count can never drift silently.
+    static final int EXPECTED_SITES = 4;
     static final String H = "Lwestlake/WlProxy;";
     static final String OBJ = "Ljava/lang/Object;";
     static int patched = 0;
@@ -24,6 +33,9 @@ public class DexRewrite {
         if (c.equals("Lq6/b;") && n.equals("b")) return "svcB";
         if (c.equals("Lq6/b;") && n.equals("a")) return "svcA";
         if (c.equals("Lg9/f;") && n.equals("value")) return "annValue";
+        // §524: q6/b.c is cdnApi.resource(path) — the Proxy call CdnSoundDataSource.open() makes for
+        // every audio segment, and the one most likely to be executing when the §436 SEGV fires.
+        if (c.equals("Lq6/b;") && n.equals("c")) return "svcC";
         return null;
     }
 
@@ -92,6 +104,6 @@ public class DexRewrite {
             System.out.println("  merged helper class " + c.getType()); }
         pool.writeTo(new FileDataStore(new File(a[2])));
         System.out.println("classes=" + classes + " patched_sites=" + patched);
-        if (patched != 3) { System.out.println("FAIL expected 3 sites"); System.exit(2); }
+        if (patched != EXPECTED_SITES) { System.out.println("FAIL: expected " + EXPECTED_SITES + " sites, got " + patched); System.exit(2); }
     }
 }

@@ -24,7 +24,8 @@ public class FindSites {
                         ReferenceInstruction ri = (ReferenceInstruction) ins;
                         MethodReference mr = (MethodReference) ri.getReference();
                         String t = mr.getDefiningClass();
-                        if (t.equals("Lq6/b;") || t.equals("Lg9/f;")) {
+                        if (t.equals("Lq6/a;") || t.equals("Lq6/b;") || t.equals("Lq6/c;")
+                                || t.equals("Lq6/d;") || t.equals("Lg9/f;")) {   // §524
                             hits++;
                             StringBuilder ps = new StringBuilder();
                             for (CharSequence p : mr.getParameterTypes()) ps.append(p);

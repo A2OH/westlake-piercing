@@ -50,6 +50,35 @@ public final class WlProxy {
         return viaHandler(service, "a", 1, new Object[] { continuation });
     }
 
+
+    // ── §524 ────────────────────────────────────────────────────────────────────────────────────
+    // §440 covered only three sites. A static scan of the app dex found SIXTEEN invoke-interface
+    // sites on the four Retrofit service interfaces that NoiceApiClient creates through
+    // Proxy.newProxyInstance (q6/a account, q6/b cdn, q6/c internal-account, q6/d subscription).
+    // Every one of the thirteen unpatched sites is a latent §436 crash, and the app was dying
+    // intermittently with a SIGSEGV inside art::interpreter::DoCall from INVOKE_INTERFACE.
+    //
+    // ★q6/b.c is the CDN `resource(path)` call — CdnSoundDataSource.open() makes it for every audio
+    // segment, so it is by far the most executed Proxy call during playback.
+    //
+    // Helpers are per-arity because the rewrite must preserve the register list: invoke-interface and
+    // invoke-static are both format 35c, so a site with N registers needs a static taking N args.
+
+    /** Replaces {@code invoke-interface Lq6/b;->c(Ljava/lang/String;)Le9/b;} — CDN resource(path). */
+    public static Object svcC(Object service, Object path) throws Throwable {
+        return viaHandler(service, "c", 1, new Object[] { path });
+    }
+
+    /** One-arg service methods (receiver + 1): q6/a.a, q6/c.a, q6/c.b. */
+    public static Object svc1(Object service, String name, Object a0) throws Throwable {
+        return viaHandler(service, name, 1, new Object[] { a0 });
+    }
+
+    /** Two-arg service methods (receiver + 2): q6/a.b/c/e, q6/d.a/b/e/f. */
+    public static Object svc2(Object service, String name, Object a0, Object a1) throws Throwable {
+        return viaHandler(service, name, 2, new Object[] { a0, a1 });
+    }
+
     /** Replaces {@code invoke-interface Lg9/f;->value()Ljava/lang/String;} (annotation proxy) */
     public static String annValue(Object annotation) throws Throwable {
         return (String) viaHandler(annotation, "value", 0, null);

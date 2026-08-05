@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <dlfcn.h>
 #include <signal.h>
 #include <ucontext.h>
@@ -37,6 +38,61 @@
 #include "token_setproc.h"           // access_token:libtokensetproc_shared
 
 namespace appspawnx {
+// ── §525: name the JAVA method behind an interpreter SEGV ──────────────────────────────────────
+// The §436 invoke-interface wall kills this child intermittently, and every fix for it (§440 app dex,
+// §464 framework dex, §524 cdn) needed the EXACT call site. But the crash backtrace is all libart:
+//
+//   [WESTLAKE-CHILDSEGV] #0 sig=11 addr=0x45 ... art::interpreter::DoCall<false>
+//     fr00 ... InstructionHandler<...>::INVOKE_INTERFACE
+//
+// i.e. "somewhere in an interface call" — leaving 19 candidate sites to guess between.
+//
+// DoCall's first parameter IS the ArtMethod*, so on aarch64 x0 still holds it when the fault happens
+// early in that function. libart exports art::ArtMethod::PrettyMethod(ArtMethod*, bool), and this
+// binary is built against the same OHOS libc++ (__h ABI) as libart, so it can be called directly —
+// turning the crash into a named Java method.
+//
+// ⚠️This runs in a signal handler after a memory fault, so it is deliberately defensive:
+//   * registers print FIRST, so a raw ArtMethod* survives even if resolution itself faults;
+//   * a re-entry flag stops a fault inside PrettyMethod from looping;
+//   * obviously-bad pointers are rejected before being dereferenced.
+static volatile int wl_naming_in_progress = 0;
+
+static void wl_name_java_method(void* ctx) {
+    ucontext_t* uc = (ucontext_t*) ctx;
+    if (uc == nullptr) return;
+    {
+        char rb[256];
+        int n = snprintf(rb, sizeof rb,
+            "[WESTLAKE-525] x0=%#lx x1=%#lx x2=%#lx x3=%#lx x29=%#lx x30=%#lx\n",
+            (unsigned long) uc->uc_mcontext.regs[0], (unsigned long) uc->uc_mcontext.regs[1],
+            (unsigned long) uc->uc_mcontext.regs[2], (unsigned long) uc->uc_mcontext.regs[3],
+            (unsigned long) uc->uc_mcontext.regs[29], (unsigned long) uc->uc_mcontext.regs[30]);
+        if (n > 0) { ssize_t w = write(2, rb, (size_t) n); (void) w; }
+    }
+    if (wl_naming_in_progress) return;
+    wl_naming_in_progress = 1;
+
+    unsigned long m = (unsigned long) uc->uc_mcontext.regs[0];
+    if (m < 0x10000 || (m & 3) != 0) { wl_naming_in_progress = 0; return; }
+
+    using PrettyFn = std::string (*)(void*, bool);
+    static PrettyFn pretty = nullptr;
+    if (pretty == nullptr)
+        pretty = (PrettyFn) dlsym(RTLD_DEFAULT, "_ZN3art9ArtMethod12PrettyMethodEPS0_b");
+    if (pretty == nullptr) {
+        const char* nf = "[WESTLAKE-525] PrettyMethod not exported; use x0 above\n";
+        ssize_t w = write(2, nf, strlen(nf)); (void) w;
+        wl_naming_in_progress = 0; return;
+    }
+    std::string name = pretty((void*) m, true);
+    char nb[512];
+    int n = snprintf(nb, sizeof nb, "[WESTLAKE-525] JAVA METHOD AT FAULT: %s\n", name.c_str());
+    if (n > 0) { ssize_t w = write(2, nb, (size_t) n); (void) w; }
+    wl_naming_in_progress = 0;
+}
+
+
 
 // ---------------------------------------------------------------------------
 // run  –  child process main entry point (does not return)
@@ -154,6 +210,8 @@ namespace appspawnx {
                                         (dladdr((void*) pc, &wl_di) != 0 && wl_di.dli_sname) ? wl_di.dli_sname : "-",
                                         (int) gettid());
                                     if (n2 > 0) { ssize_t w = write(2, b, (size_t) n2); (void) w; }
+                                    // §525: turn "somewhere in an interface call" into a named site
+                                    if (sig == 11) wl_name_java_method(ctx);
                                     // frame-pointer walk (aarch64: [fp]=caller fp, [fp+8]=ret addr)
                                     if (uc != nullptr) {
                                         unsigned long fp = (unsigned long) uc->uc_mcontext.regs[29];
