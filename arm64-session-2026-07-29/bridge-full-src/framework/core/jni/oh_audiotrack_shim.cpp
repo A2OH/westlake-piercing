@@ -213,6 +213,20 @@ static jint nGetPos(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(
 static void nSetVolume(JNIEnv* env, jobject thiz, jfloat l, jfloat r){ ATShim* s=getShim(env,thiz); if(s&&p_SetVol&&s->renderer)p_SetVol(s->renderer,(l+r)/2.f); }
 static jint nMinBuf(JNIEnv*, jclass, jint rate, jint chCfg, jint fmt){ int ch=__builtin_popcount((unsigned)chCfg&0xFFFFF); if(ch<1)ch=2; int bpf=2*ch; int b=rate*bpf/10; if(b<4096)b=4096; return b; }
 
+// §505 (2026-08-04): AudioTrack.<init> calls native_setPlayerIId to hand AudioService the player id
+// allocated by PlayerBase, purely for that service's own bookkeeping. We have no AudioService, so a
+// no-op is the correct behaviour — but leaving it UNBOUND is not. Unbound, it raised
+//   UnsatisfiedLinkError: No implementation found for
+//     void android.media.AudioTrack.native_setPlayerIId(int)
+//       at android.media.AudioTrack.<init>(AudioTrack.java:908)
+//       at android.media.AudioTrack$Builder.build(AudioTrack.java:1450)
+// on ExoPlayer's audio HandlerThread. That is an Error, so it is not caught by ExoPlayer and, with
+// ThreadGroup.uncaughtException a no-op in this runtime, it killed the thread with no report — the
+// exact same failure shape as §504's libcore.io.Memory.pokeByteArray. The visible symptom was the
+// codec feeding a few buffers (queueInput=17, cbOutput=4) and then freezing forever, because the
+// sink that was supposed to drain it no longer had a thread.
+static void nSetPlayerIId(JNIEnv*, jobject, jint) { }
+
 int register_AudioTrack_shim(JNIEnv* env) {
     if (!loadOhAudio()) { ATERR("OH audio unavailable; AudioTrack shim NOT registered"); return -1; }
     jclass c = env->FindClass("android/media/AudioTrack");
@@ -234,6 +248,8 @@ int register_AudioTrack_shim(JNIEnv* env) {
         {"native_get_position", "()I", (void*)nGetPos},
         {"native_setVolume", "(FF)V", (void*)nSetVolume},
         {"native_get_min_buff_size", "(III)I", (void*)nMinBuf},
+        // §505: no-op, but it MUST be bound — see nSetPlayerIId above.
+        {"native_setPlayerIId", "(I)V", (void*)nSetPlayerIId},
     };
     int n = sizeof(m)/sizeof(m[0]); int ok=0;
     for (int i=0;i<n;i++){ if(env->RegisterNatives(c,&m[i],1)==0) ok++; else { if(env->ExceptionCheck())env->ExceptionClear(); ATERR("reg fail: %s", m[i].name);} }

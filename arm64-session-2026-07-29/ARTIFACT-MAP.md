@@ -106,6 +106,40 @@ After §504 the `ExoPlayer:Playback` thread survives and the DAO query that §48
 resume** (`cache lambda: Room DAO query RESUMED (row in hand)` → `loadFromNetwork lambda RAN`) —
 observed for the first time. ⚠️**Audio is still not audible**; the run did not reach codec creation.
 
+## ★§505 — `AudioTrack.native_setPlayerIId` was unbound (2026-08-04)
+
+The same failure shape as §504, one stage further down the pipeline. With §504 in place the codec
+finally ran — `queueInput idx=0..7 size=384 (feeding MP3)` and `cbOutput size=4608 (OH produced PCM)`,
+the first time this port has ever fed the decoder — and then froze at `queueInput=17 / cbOutput=4`.
+
+```
+[WESTLAKE-JNIMISS] void android.media.AudioTrack.native_setPlayerIId(int)
+[PFCUT] ThreadGroup.uncaughtException noop  thread=HandlerThread
+   throwable=UnsatisfiedLinkError("No implementation found for
+      void android.media.AudioTrack.native_setPlayerIId(int)")
+   at android.media.AudioTrack.<init>(AudioTrack.java:908)
+   at android.media.AudioTrack$Builder.build(AudioTrack.java:1450)
+```
+
+`native_setPlayerIId` hands AudioService the id `PlayerBase` allocated, purely for that service's
+bookkeeping. We have no AudioService, so a **no-op is the correct implementation** — but leaving it
+unbound is not: it threw an `Error` in `AudioTrack.<init>`, which ExoPlayer does not catch, on the
+audio HandlerThread, killing it silently. With no sink thread left to drain the codec, the feed
+stopped dead. Fixed in `framework/core/jni/oh_audiotrack_shim.cpp`.
+
+★**The pattern to internalise: an unbound native is not a silent no-op, it is a thread-killing
+`Error`.** Two audio blockers in a row were exactly this. Run `grep -a JNIMISS` after every advance;
+the runtime names them, and each one that lands on a HandlerThread ends that thread without a word.
+
+## ★Playback is slow, not stuck — wait ~5 minutes after tapping play
+
+`LocalSoundPlayer.Factory` builds its `SoundMetadataSource` as
+`soundRepository.get(soundId).lastOrNull()`, and `fetchNetworkBoundResource` only emits `Success`
+**after** `loadFromNetwork`, which re-runs `loadLibraryManifestInCacheStore()` — the whole library
+sync. So every play tap waits out a full re-sync (~4-5 min here, sub-second on the phone). A run
+watched for only 120 s looks like a permanent hang; the codec appeared at ~5 min once the sync's
+transaction count stopped climbing (409 → 818). ⚠️Do not diagnose a stall on a short window.
+
 ## ⚠️Measure liveness before you measure anything else
 
 A second run appeared to show the opposite — the DAO query never resuming, the DB "completely idle"
