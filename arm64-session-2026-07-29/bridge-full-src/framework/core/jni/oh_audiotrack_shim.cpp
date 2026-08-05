@@ -309,11 +309,14 @@ int register_AudioTrack_shim(JNIEnv* env) {
         {"native_get_latency", "()I", (void*)nGetLatency},
         {"native_setLogSessionId", "(Ljava/lang/String;)V", (void*)nSetLogSessionId},
         {"native_get_timestamp", "([J)I", (void*)nGetTimestamp},
-        {"native_attachAuxEffect", "(I)I", (void*)nAttachAuxEffect},
-        {"native_setAuxEffectSendLevel", "(F)I", (void*)nSetAuxSendLevel},
-        {"native_setOutputDevice", "(I)Z", (void*)nSetOutputDevice},
-        {"native_set_delay_padding", "(II)V", (void*)nSetDelayPadding},
-        {"native_is_direct_output_supported", "(IIIIIII)Z", (void*)nIsDirectSupported},
+        // ⛔The five other natives the dex scan turned up — attachAuxEffect,
+        // setAuxEffectSendLevel, setOutputDevice, set_delay_padding and
+        // is_direct_output_supported — are NOT bound, and binding them is not a free win.
+        // Registering all six at once hung the child at startup: it stayed alive but never rendered
+        // a frame (swaps=0 for 5 minutes, versus a 44 s boot on the build without them). Only
+        // get_timestamp was ever named by JNIMISS; the rest were me predicting ahead of the
+        // evidence. Bisecting cost a full board cycle, so: bind what the runtime has actually
+        // asked for, one at a time, and let JNIMISS name the next one.
     };
     int n = sizeof(m)/sizeof(m[0]);
     // Entries from kFirstOptional on are the §505/§506 no-ops. Whether a given framework.jar
