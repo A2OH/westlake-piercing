@@ -194,10 +194,26 @@ static jint nWriteShort(JNIEnv* env, jobject thiz, jshortArray data, jint off, j
     env->ReleaseShortArrayElements(data,buf,JNI_ABORT);
     return w/2; // return in shorts
 }
+// §507 instrumentation: the write path was completely silent, so "no write markers in the log" was
+// not evidence that ExoPlayer never wrote — it was evidence that we never looked. The observed
+// symptom is AudioTrack being created -> started -> released in a loop with
+// "volume data counts: 0" from the OH renderer, which is equally consistent with (a) ExoPlayer never
+// calling write, and (b) write being called and failing. Those need different fixes, so log it.
+// Rate-limited: the first few calls, then every 200th, so a working stream costs almost nothing.
+static long g_writeCalls = 0;
+static void logWrite(jint size, jint rc) {
+    long n = ++g_writeCalls;
+    if (n <= 5 || (n % 200) == 0) ATLOG("write #%ld size=%d rc=%d", n, (int)size, (int)rc);
+}
+
 static jint nWriteNative(JNIEnv* env, jobject thiz, jobject byteBuf, jint pos, jint size, jint /*fmt*/, jboolean blocking){
-    ATShim* s=getShim(env,thiz); if(!s) return -22;
-    uint8_t* base=(uint8_t*)env->GetDirectBufferAddress(byteBuf); if(!base) return -1;
-    return pushPcm(s, base+pos, size, blocking);
+    ATShim* s=getShim(env,thiz);
+    if(!s) { logWrite(size, -22); return -22; }
+    uint8_t* base=(uint8_t*)env->GetDirectBufferAddress(byteBuf);
+    if(!base) { logWrite(size, -1); return -1; }
+    jint rc = pushPcm(s, base+pos, size, blocking);
+    logWrite(size, rc);
+    return rc;
 }
 static jint nWriteFloat(JNIEnv* env, jobject thiz, jfloatArray data, jint off, jint size, jint /*fmt*/, jboolean blocking){
     // MVP: convert F32 -> S16LE
