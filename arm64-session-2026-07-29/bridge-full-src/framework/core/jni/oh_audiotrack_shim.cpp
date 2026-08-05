@@ -98,6 +98,10 @@ struct ATShim {
     std::mutex mu; std::condition_variable spaceCv;
     bool started=false, stopping=false;
     int64_t framesRendered=0;
+    // §514: frames actually played out of data the APP wrote. framesRendered counts every frame the
+    // OH renderer pulled, including the silence we hand it on underrun, so it advances even when the
+    // app has written nothing — which is NOT what AudioTrack.getPlaybackHeadPosition() means.
+    int64_t framesReal=0;
 };
 
 static jfieldID g_fNative = nullptr;
@@ -115,7 +119,9 @@ static int32_t onWriteData(OH_AudioRenderer*, void* user, void* buffer, int32_t 
     for (int32_t i=0;i<give;i++){ out[i]=s->ring[s->head]; s->head=(s->head+1)%s->cap; }
     s->count -= give;
     if (give < len) memset(out+give, 0, len-give);     // silence on underrun
-    s->framesRendered += len / (s->bytesPerFrame>0?s->bytesPerFrame:4);
+    int bpf = (s->bytesPerFrame>0?s->bytesPerFrame:4);
+    s->framesRendered += len / bpf;
+    s->framesReal     += give / bpf;   // §514: only real PCM counts toward playback position
     lk.unlock();
     s->spaceCv.notify_all();
     return 0; // AUDIOSTREAM_SUCCESS
@@ -232,7 +238,14 @@ static jint nWriteFloat(JNIEnv* env, jobject thiz, jfloatArray data, jint off, j
 static long g_posCalls = 0;
 static jint nGetPos(JNIEnv* env, jobject thiz){
     ATShim* s=getShim(env,thiz); if(!s) return 0;
-    int64_t f=s->framesRendered; if(p_Frames&&s->renderer)p_Frames(s->renderer,&f);
+    // §514: AudioTrack.getPlaybackHeadPosition() is "frames played from what the app wrote". Using
+    // OH_AudioRenderer_GetFramesWritten reported 8916 frames while the app had written ZERO bytes,
+    // because RENDER_MODE_CALLBACK starts pulling the moment the stream starts and we answer with
+    // silence. ExoPlayer's AudioTrackPositionTracker compares that head position against its own
+    // writtenFrames; position >> written is an impossible state and it aborts the sink with a bare
+    // IllegalArgumentException, before the first write ever happens. Report frames drained from the
+    // ring instead, which is the quantity AudioTrack actually documents.
+    int64_t f; { std::lock_guard<std::mutex> l(s->mu); f = s->framesReal; }
     // §512: distinguishes "sink is alive and polling position" from "sink bailed and calls nothing".
     // AudioTrack.write() returns ERROR_INVALID_OPERATION *before reaching native* when
     // mState != STATE_INITIALIZED, so a silent write path and a dead sink look identical from the
