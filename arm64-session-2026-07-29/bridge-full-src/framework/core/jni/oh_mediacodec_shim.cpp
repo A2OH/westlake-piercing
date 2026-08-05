@@ -314,6 +314,41 @@ static jobject nGetBuffer(JNIEnv* env, jobject thiz, jboolean input, jint index)
     }
     jobject local = env->NewDirectByteBuffer(addr, cap);
     if (!local) return nullptr;
+    // §515: give the buffer NATIVE byte order, exactly as AOSP's MediaCodec does in
+    // createByteBufferFromABuffer. java.nio says every freshly created ByteBuffer is BIG_ENDIAN, and
+    // NewDirectByteBuffer is no exception — so without this the buffers we hand out are big-endian
+    // while every caller assumes little-endian PCM. ExoPlayer checks it explicitly:
+    //     if (outputBuffer == null) Assertions.checkArgument(buffer.order() == ByteOrder.LITTLE_ENDIAN);
+    // (DefaultAudioSink.handleBuffer, instruction [153] in the minified dex), and
+    // Assertions.checkArgument(boolean) throws IllegalArgumentException with NO message — which is
+    // precisely the message-less IAE that was aborting the sink before a single PCM byte was written.
+    {
+        static jmethodID s_order = nullptr;
+        static jobject s_nativeOrder = nullptr;   // global ref, resolved once
+        if (s_order == nullptr || s_nativeOrder == nullptr) {
+            jclass bbC = env->FindClass("java/nio/ByteBuffer");
+            jclass boC = env->FindClass("java/nio/ByteOrder");
+            if (bbC && boC) {
+                jmethodID nativeOrderM = env->GetStaticMethodID(boC, "nativeOrder", "()Ljava/nio/ByteOrder;");
+                s_order = env->GetMethodID(bbC, "order", "(Ljava/nio/ByteOrder;)Ljava/nio/ByteBuffer;");
+                if (nativeOrderM) {
+                    jobject no = env->CallStaticObjectMethod(boC, nativeOrderM);
+                    if (no) { s_nativeOrder = env->NewGlobalRef(no); env->DeleteLocalRef(no); }
+                }
+            }
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (bbC) env->DeleteLocalRef(bbC);
+            if (boC) env->DeleteLocalRef(boC);
+        }
+        if (s_order && s_nativeOrder) {
+            jobject reordered = env->CallObjectMethod(local, s_order, s_nativeOrder);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            // order() returns the same buffer; keep the local ref we already hold.
+            if (reordered) env->DeleteLocalRef(reordered);
+        } else {
+            MCERR("§515: could not set native byte order on the codec ByteBuffer");
+        }
+    }
     jobject global = env->NewGlobalRef(local);
     env->DeleteLocalRef(local);
     if (!global) return nullptr;
