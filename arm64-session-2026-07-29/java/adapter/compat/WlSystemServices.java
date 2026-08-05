@@ -38,8 +38,71 @@ public final class WlSystemServices {
         { "media_router",   "westlake.impl.IMediaRouterServiceImpl" },
     };
 
+
+    /**
+     * §503 — name the exception that kills ExoPlayer's playback thread.
+     *
+     * The app's playback stalls because the ExoPlayer:Playback HandlerThread EXITS: a full thread
+     * dump of the running process shows main, DefaultDispatch, arch_disk_io_*, RenderThread and two
+     * ExoPlayer:Media threads, but no ExoPlayer:Playback -- and ExoPlayer:Loader disappears shortly
+     * after. A HandlerThread dies when an exception escapes handleMessage, and libart's throw probe
+     * caps at 40 and is permanently saturated by unrelated MediaRouter noise, so that exception is
+     * invisible.
+     *
+     * A default uncaught-exception handler sees it regardless of the probe. This only LOGS and then
+     * delegates to whatever handler was already installed, so app behaviour is unchanged.
+     *
+     * ★Re-installed by a polling daemon: the bridge runs before Application.onCreate, and anything
+     * the app installs later (crash reporters do this) would otherwise silently displace us.
+     * ★Named classes only -- d8 rejects anonymous inner classes and emits no dex at all.
+     */
+    public static final class WlUncaught implements Thread.UncaughtExceptionHandler {
+        private final Thread.UncaughtExceptionHandler prev;
+        WlUncaught(Thread.UncaughtExceptionHandler p) { prev = p; }
+
+        @Override public void uncaughtException(Thread t, Throwable e) {
+            try {
+                System.err.println("[WESTLAKE-503] UNCAUGHT on thread '" + t.getName() + "': " + e);
+                System.err.flush();
+                WlProbe.logThrowable(e);          // native sink; renders causes and any frames
+            } catch (Throwable ignored) { }
+            if (prev != null) {
+                try { prev.uncaughtException(t, e); } catch (Throwable ignored) { }
+            }
+        }
+    }
+
+    static final class UncaughtInstaller implements Runnable {
+        @Override public void run() {
+            for (int i = 0; i < 7200; i++) {      // ~1h at 500ms
+                try {
+                    Thread.UncaughtExceptionHandler cur = Thread.getDefaultUncaughtExceptionHandler();
+                    if (!(cur instanceof WlUncaught)) {
+                        Thread.setDefaultUncaughtExceptionHandler(new WlUncaught(cur));
+                        System.err.println("[WESTLAKE-503] uncaught handler installed (prev="
+                                + (cur == null ? "null" : cur.getClass().getName()) + ")");
+                        System.err.flush();
+                    }
+                    Thread.sleep(500);
+                } catch (Throwable ignored) { }
+            }
+        }
+    }
+
+    public static void installUncaughtLogger() {
+        try {
+            Thread t = new Thread(new UncaughtInstaller(), "wl-uncaught-installer");
+            t.setDaemon(true);
+            t.start();
+        } catch (Throwable t) {
+            System.err.println("[WESTLAKE-503] installer failed: " + t);
+            System.err.flush();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public static String install() {
+        installUncaughtLogger();
         StringBuilder out = new StringBuilder();
         try {
             ClassLoader cl = WlSystemServices.class.getClassLoader();
