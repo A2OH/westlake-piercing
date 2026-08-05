@@ -43,8 +43,21 @@ extern "C" int HiLogPrint(int type, int level, unsigned int domain,
 // LOG_TYPE_CORE=3 (HiLog type), domain 0xD002000 (= LOG_APP equivalent).
 static int b37AndroidPrioToHiLogLevel(int prio) {
     switch (prio) {
-        case 2: return 3;   // VERBOSE → DEBUG
-        case 3: return 3;   // DEBUG
+        // §516: map Android VERBOSE/DEBUG up to HiLog INFO.
+        //
+        // The app narrates its own state machine with Log.d (LocalSoundPlayer's
+        // "queueNextSegment: queuing X", "onMediaPlayerStateChanged: state=X", etc. — ungated, and
+        // R8 keeps the tags), which is the single most useful signal for debugging playback and the
+        // exact view `adb logcat` gives on the reference phone. At HiLog DEBUG those lines are
+        // dropped unless the board runs `hilog -b DEBUG`, and that is a GLOBAL base level: it turns
+        // on debug logging for every OpenHarmony subsystem at once, which floods the buffer badly
+        // enough that the child could not start at all (two failed restarts, and a bridge rollback
+        // that "confirmed" a regression which did not exist).
+        //
+        // Mapping only the *Android app's* debug output to INFO adds this app's handful of lines
+        // instead of the whole platform's, so the narration is visible at the default level.
+        case 2: return 4;   // VERBOSE → INFO
+        case 3: return 4;   // DEBUG   → INFO
         case 4: return 4;   // INFO
         case 5: return 5;   // WARN
         case 6: return 6;   // ERROR
