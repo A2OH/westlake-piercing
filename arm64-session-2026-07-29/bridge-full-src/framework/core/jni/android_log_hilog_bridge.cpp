@@ -98,13 +98,27 @@ static int android_to_oh_level(int android_prio) {
 // ---------------------------------------------------------------------------
 static void __android_log_hilog_logger(
         const struct __android_log_message *log_message) {
-    // Use OH_LOG_APP (0) as log type so logs appear in the "app" category
-    // in hdc shell hilog output.
-    HiLogPrint(OH_LOG_APP,
+    // §527: route as LOG_TYPE_CORE + domain 0xD000F00, matching android_util_Log.cpp's §516/B.37
+    // bypass, NOT OH_LOG_APP.
+    //
+    // Everything ART logs — LOG(), VLOG(), the JIT's own narration — comes through here, and none of
+    // it was reaching ANY sink: not the child's stderr, not hilog. Meanwhile our own AppSpawnX and
+    // OH_RegHook lines (which call HiLogPrint directly with LOG_TYPE_CORE/0xD000F00) show up fine.
+    // That asymmetry is the tell: app-type logs with this domain are being dropped, exactly the
+    // filtering §516 documented on the Java side.
+    //
+    // The cost of the old behaviour was severe and invisible: ART could not report a single
+    // diagnostic, which is why "the JIT creates no code cache" had no accompanying explanation —
+    // libart's own "Failed to create JIT Code Cache: " message exists in its string table but could
+    // never be seen.
+    //
+    // ⚠️Use %{public}s: hilog redacts %s arguments as <private> by default, which would turn every
+    // recovered ART message into noise.
+    HiLogPrint(3 /*LOG_TYPE_CORE*/,
                android_to_oh_level(log_message->priority),
-               ANDROID_HILOG_DOMAIN,
+               0xD000F00u,
                log_message->tag ? log_message->tag : "AndroidLog",
-               "%s",
+               "%{public}s",
                log_message->message ? log_message->message : "");
 }
 

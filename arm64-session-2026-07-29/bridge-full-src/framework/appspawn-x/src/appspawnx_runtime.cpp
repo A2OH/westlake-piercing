@@ -234,6 +234,26 @@ int AppSpawnXRuntime::startVm() {
         LOGW("DEX verification disabled (dev mode)");
     }
 
+    // ── §526: JIT bring-up diagnostics ──────────────────────────────────────────────────────────
+    // The child runs with ZERO compiled code: /proc/<pid>/maps has no jit-code-cache mapping and the
+    // only anonymous executable region is [vdso]. Everything is interpreted, which is why a library
+    // sync that is sub-second on a stock phone takes minutes here and why timing-sensitive paths
+    // deadlock.
+    //
+    // ART is silent about it: neither "Created jit code cache" nor "Failed to create JIT Code Cache"
+    // (both present in libart's string table) appears in the child's stderr OR in hilog, so
+    // JitCodeCache::Create is likely never reached. -verbose:jit makes ART narrate the decision
+    // instead of guessing at it, and -Xusejit:true removes any doubt about the default.
+    if (const char* v = getenv("APPSPAWNX_JIT_VERBOSE"); v && strcmp(v, "1") == 0) {
+        options.push_back(makeOption("-verbose:jit"));
+        LOGW("ART JIT verbose logging ENABLED via APPSPAWNX_JIT_VERBOSE=1");
+    }
+    if (const char* v = getenv("APPSPAWNX_FORCE_JIT"); v && strcmp(v, "1") == 0) {
+        options.push_back(makeOption("-Xusejit:true"));
+        options.push_back(makeOption("-Xjitthreshold:1"));   // compile almost immediately
+        LOGW("ART JIT FORCED ON via APPSPAWNX_FORCE_JIT=1 (threshold=1)");
+    }
+
     // 2026-05-01 G2.14n DIAGNOSTIC: disable JIT.
     if (const char* v = getenv("APPSPAWNX_NO_JIT"); v && strcmp(v, "1") == 0) {
         options.push_back(makeOption("-Xusejit:false"));

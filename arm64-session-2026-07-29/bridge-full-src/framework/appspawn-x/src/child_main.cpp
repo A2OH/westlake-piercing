@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <sys/uio.h>
 #include <fcntl.h>
 #include <grp.h>
 #include <sys/prctl.h>
@@ -38,57 +39,182 @@
 #include "token_setproc.h"           // access_token:libtokensetproc_shared
 
 namespace appspawnx {
-// ── §525: name the JAVA method behind an interpreter SEGV ──────────────────────────────────────
-// The §436 invoke-interface wall kills this child intermittently, and every fix for it (§440 app dex,
-// §464 framework dex, §524 cdn) needed the EXACT call site. But the crash backtrace is all libart:
+
+// ── §528: create the JIT that this libart never creates ────────────────────────────────────────
+// The child runs with ZERO compiled code: no jit-code-cache mapping, no AOT mapping, only [vdso].
+// Everything is interpreted, which is why startup takes minutes, the UI can deadlock, and
+// timing-sensitive paths behave nothing like a real device.
 //
-//   [WESTLAKE-CHILDSEGV] #0 sig=11 addr=0x45 ... art::interpreter::DoCall<false>
-//     fr00 ... InstructionHandler<...>::INVOKE_INTERFACE
+// It is not a configuration problem — ART accepts -Xusejit:true / -Xjitthreshold:1 — and it is not
+// a missing compiler: JitCompiler::CompileMethod and OptimizingCompiler::JitCompile are statically
+// linked into libart (371 JIT symbols). The JIT is simply never CREATED, and falls through BOTH
+// paths that would create it:
 //
-// i.e. "somewhere in an interface call" — leaving 19 candidate sites to guess between.
+//   1. runtime.cc:  if (UseJitCompilation() || GetSaveProfilingInfo()) { if (!IsZygote()) CreateJit(); }
+//      appspawn-x runs ART *as a zygote*, so IsZygote() is true and this is skipped.
+//   2. Post-fork, AOSP creates it inside Runtime::InitNonZygoteOrPostFork — which this libart
+//      deliberately SKIPS ("Skipping InitNonZygoteOrPostFork (standalone build)") to avoid starting
+//      the SignalCatcher thread.
 //
-// DoCall's first parameter IS the ArtMethod*, so on aarch64 x0 still holds it when the fault happens
-// early in that function. libart exports art::ArtMethod::PrettyMethod(ArtMethod*, bool), and this
-// binary is built against the same OHOS libc++ (__h ABI) as libart, so it can be called directly —
-// turning the crash into a named Java method.
+// Confirmed by markers: "[RT] Creating JIT..." appears 0 times in the parent AND the child, while
+// "Skipping InitNonZygoteOrPostFork" appears once. Nothing ever tried, which is why ART never logged
+// a failure — its own "Failed to create JIT Code Cache: " could not fire.
 //
-// ⚠️This runs in a signal handler after a memory fault, so it is deliberately defensive:
-//   * registers print FIRST, so a raw ArtMethod* survives even if resolution itself faults;
-//   * a re-entry flag stops a fault inside PrettyMethod from looping;
-//   * obviously-bad pointers are rejected before being dereferenced.
+// libart is NOT rebuildable here, but Runtime::CreateJit() is an exported symbol
+// (_ZN3art7Runtime9CreateJitEv, type T), as is Runtime::Current(). So do exactly what the skipped
+// init would have done, from outside, at the point where the child's ART state is consistent —
+// after ZygoteHooks.postForkChild/postForkCommon.
+//
+// ⚠️Env-gated (APPSPAWNX_FORCE_JIT=1) so it is trivially reversible: this calls into ART internals
+// at a point AOSP would not, and a bad interaction must be switchable off without a rebuild.
+static void wl_create_jit_after_fork() {
+    const char* v = getenv("APPSPAWNX_FORCE_JIT");
+    if (v == nullptr || strcmp(v, "1") != 0) return;
+
+    // Runtime::CreateJit() is a non-virtual member with no args: on aarch64 `this` is simply x0,
+    // so a plain function pointer taking the instance is a correct call.
+    using CurrentFn   = void* (*)();
+    using CreateJitFn = void  (*)(void*);
+    auto current   = (CurrentFn)   dlsym(RTLD_DEFAULT, "_ZN3art7Runtime7CurrentEv");
+    auto createJit = (CreateJitFn) dlsym(RTLD_DEFAULT, "_ZN3art7Runtime9CreateJitEv");
+    if (current == nullptr || createJit == nullptr) {
+        LOGW("[JIT-528] symbols unavailable (Current=%p CreateJit=%p) — JIT stays off",
+             (void*) current, (void*) createJit);
+        return;
+    }
+    void* runtime = current();
+    if (runtime == nullptr) { LOGW("[JIT-528] Runtime::Current() null — JIT stays off"); return; }
+
+    // §529: CreateJit() alone is not enough — it hits its ONE silent early return:
+    //     if (!jit_options_->UseJitCompilation() && !jit_options_->GetSaveProfilingInfo()) return;
+    // because runtime.cc unconditionally does, for every non-AOT runtime:
+    //     jit_options_->SetUseJitCompilation(false);   // "interpreter-first ... standalone"
+    // which overwrites whatever -Xusejit:true set. That is why the flag was accepted and had no
+    // effect, and why CreateJit() returned without logging anything.
+    //
+    // libart is not rebuildable, and SetUseJitCompilation is inline (not exported), so flip the
+    // field directly. The offsets are not guessed — they are read out of the deployed binary's own
+    // machine code for Runtime::CreateJit:
+    //     722f90:  ldr   x8, [x0, #656]   ; jit_options_        -> Runtime + 656
+    //     722f98:  ldrb  w9, [x8]         ; use_jit_compilation_-> JitOptions + 0
+    //     722fa0:  ldrb  w9, [x8, #48]    ; save_profiling_info_-> JitOptions + 48
+    //     72303c:  str   x0, [x19, #648]  ; jit_code_cache_     -> Runtime + 648
+    //
+    // ⚠️These are valid ONLY for libart md5 e1af9bb570b6ff1cae1419b9ea86c6cf. Guard accordingly: the
+    // byte MUST currently read 0 (the source forces it false), so a different build fails safe
+    // instead of corrupting an unrelated field.
+    static const size_t kJitOptionsOffset   = 656;   // Runtime::jit_options_
+    static const size_t kJitCodeCacheOffset = 648;   // Runtime::jit_code_cache_
+    static const size_t kUseJitCompilation  = 0;     // JitOptions::use_jit_compilation_
+
+    void** jitOptionsSlot = reinterpret_cast<void**>(
+        reinterpret_cast<char*>(runtime) + kJitOptionsOffset);
+    void* jitOptions = *jitOptionsSlot;
+    if (jitOptions == nullptr || (reinterpret_cast<uintptr_t>(jitOptions) & 7) != 0) {
+        LOGW("[JIT-528] jit_options_ implausible (%p) — wrong libart? leaving JIT off", jitOptions);
+        return;
+    }
+    unsigned char* useJit =
+        reinterpret_cast<unsigned char*>(jitOptions) + kUseJitCompilation;
+    if (*useJit != 0) {
+        LOGW("[JIT-528] use_jit_compilation_ is already %u — layout mismatch, refusing to write",
+             (unsigned) *useJit);
+        return;
+    }
+    *useJit = 1;
+    LOGW("[JIT-528] use_jit_compilation_ 0 -> 1 (undoing the source-level force-off)");
+
+    LOGW("[JIT-528] calling Runtime::CreateJit() (the standalone-build patch skips it)");
+    createJit(runtime);
+
+    void* codeCache = *reinterpret_cast<void**>(
+        reinterpret_cast<char*>(runtime) + kJitCodeCacheOffset);
+    LOGW("[JIT-528] CreateJit() returned; jit_code_cache_=%p %s",
+         codeCache, codeCache != nullptr ? "(JIT IS LIVE)" : "(still null — see ART log)");
+}
+
+
+// ── §525b: name the JAVA method behind an interpreter SEGV, WITHOUT trusting libart ─────────────
+// First cut called art::ArtMethod::PrettyMethod(x0) directly. It fired on the first real crash and
+// produced NOTHING but the register line: no method name, and not even the "not exported" fallback —
+// so PrettyMethod itself faulted on the pointer. That is informative in its own right (the ArtMethod
+// is likely CORRUPT, not merely unresolvable, which fits §436 being memory corruption rather than a
+// lookup bug), but it yields no site.
+//
+// So: never dereference anything directly, and never call into libart. Every read goes through
+// process_vm_readv on our own pid, which returns EFAULT instead of raising a nested fault. Dump all
+// registers, then decode any that plausibly point at an ArtMethod.
+//
+// ArtMethod layout (ART, Android 12+):
+//   +0x00 u32 declaring_class_      (GcRoot, compressed reference)
+//   +0x04 u32 access_flags_
+//   +0x08 u32 dex_method_index_
+//   +0x0c u16 method_index_
+//   +0x0e u16 hotness_count_ / imt_index_
+//   +0x10 ptr data_ ; +0x18 ptr entry_point_from_quick_compiled_code_
+// dex_method_index_ + declaring_class_ are enough to identify the call target offline.
 static volatile int wl_naming_in_progress = 0;
+
+// Read remote memory without ever faulting: EFAULT comes back as a return value.
+static bool wl_safe_read(unsigned long src, void* dst, size_t n) {
+    struct iovec l; l.iov_base = dst;            l.iov_len = n;
+    struct iovec r; r.iov_base = (void*) src;    r.iov_len = n;
+    return process_vm_readv(getpid(), &l, 1, &r, 1, 0) == (ssize_t) n;
+}
+
+static void wl_dump_artmethod(const char* what, unsigned long p) {
+    unsigned char raw[32];
+    if (!wl_safe_read(p, raw, sizeof raw)) {
+        char b[128];
+        int n = snprintf(b, sizeof b, "[WESTLAKE-525]   %s=%#lx UNREADABLE\n", what, p);
+        if (n > 0) { ssize_t w = write(2, b, (size_t) n); (void) w; }
+        return;
+    }
+    unsigned int declaring, access, dexIdx; unsigned short mIdx, hotness;
+    memcpy(&declaring, raw + 0x00, 4); memcpy(&access,  raw + 0x04, 4);
+    memcpy(&dexIdx,    raw + 0x08, 4); memcpy(&mIdx,    raw + 0x0c, 2);
+    memcpy(&hotness,   raw + 0x0e, 2);
+    char b[320];
+    int n = snprintf(b, sizeof b,
+        "[WESTLAKE-525]   %s=%#lx declaring_class=%#x access=%#x dex_method_idx=%u "
+        "method_idx=%u hotness=%u\n",
+        what, p, declaring, access, dexIdx, mIdx, hotness);
+    if (n > 0) { ssize_t w = write(2, b, (size_t) n); (void) w; }
+}
 
 static void wl_name_java_method(void* ctx) {
     ucontext_t* uc = (ucontext_t*) ctx;
-    if (uc == nullptr) return;
-    {
-        char rb[256];
-        int n = snprintf(rb, sizeof rb,
-            "[WESTLAKE-525] x0=%#lx x1=%#lx x2=%#lx x3=%#lx x29=%#lx x30=%#lx\n",
-            (unsigned long) uc->uc_mcontext.regs[0], (unsigned long) uc->uc_mcontext.regs[1],
-            (unsigned long) uc->uc_mcontext.regs[2], (unsigned long) uc->uc_mcontext.regs[3],
-            (unsigned long) uc->uc_mcontext.regs[29], (unsigned long) uc->uc_mcontext.regs[30]);
-        if (n > 0) { ssize_t w = write(2, rb, (size_t) n); (void) w; }
-    }
-    if (wl_naming_in_progress) return;
+    if (uc == nullptr || wl_naming_in_progress) return;
     wl_naming_in_progress = 1;
 
-    unsigned long m = (unsigned long) uc->uc_mcontext.regs[0];
-    if (m < 0x10000 || (m & 3) != 0) { wl_naming_in_progress = 0; return; }
-
-    using PrettyFn = std::string (*)(void*, bool);
-    static PrettyFn pretty = nullptr;
-    if (pretty == nullptr)
-        pretty = (PrettyFn) dlsym(RTLD_DEFAULT, "_ZN3art9ArtMethod12PrettyMethodEPS0_b");
-    if (pretty == nullptr) {
-        const char* nf = "[WESTLAKE-525] PrettyMethod not exported; use x0 above\n";
-        ssize_t w = write(2, nf, strlen(nf)); (void) w;
-        wl_naming_in_progress = 0; return;
+    // All registers: the first cut assumed x0 still held called_method, but the fault happens partway
+    // into DoCall where x0..x3 may already be scratch (the observed x2=0x8, x3=0x2b are not pointers).
+    for (int i = 0; i < 31; i += 4) {
+        char b[200];
+        int n = snprintf(b, sizeof b, "[WESTLAKE-525] x%-2d=%#-18lx x%-2d=%#-18lx x%-2d=%#-18lx x%-2d=%#lx\n",
+            i,   (unsigned long) uc->uc_mcontext.regs[i],
+            i+1, (unsigned long) (i+1 < 31 ? uc->uc_mcontext.regs[i+1] : 0),
+            i+2, (unsigned long) (i+2 < 31 ? uc->uc_mcontext.regs[i+2] : 0),
+            i+3, (unsigned long) (i+3 < 31 ? uc->uc_mcontext.regs[i+3] : 0));
+        if (n > 0) { ssize_t w = write(2, b, (size_t) n); (void) w; }
     }
-    std::string name = pretty((void*) m, true);
-    char nb[512];
-    int n = snprintf(nb, sizeof nb, "[WESTLAKE-525] JAVA METHOD AT FAULT: %s\n", name.c_str());
-    if (n > 0) { ssize_t w = write(2, nb, (size_t) n); (void) w; }
+    {
+        char b[160];
+        int n = snprintf(b, sizeof b, "[WESTLAKE-525] sp=%#lx pc=%#lx\n",
+            (unsigned long) uc->uc_mcontext.sp, (unsigned long) uc->uc_mcontext.pc);
+        if (n > 0) { ssize_t w = write(2, b, (size_t) n); (void) w; }
+    }
+
+    // Decode every register that could plausibly be an ArtMethod: 4-byte aligned, above the null
+    // page, and readable. ArtMethods are small and dense, so a few false positives are cheap.
+    for (int i = 0; i < 31; ++i) {
+        unsigned long v = (unsigned long) uc->uc_mcontext.regs[i];
+        if (v < 0x10000 || (v & 3) != 0) continue;
+        unsigned int probe;
+        if (!wl_safe_read(v + 8, &probe, 4)) continue;   // dex_method_index_ must at least be readable
+        char tag[8]; snprintf(tag, sizeof tag, "x%d", i);
+        wl_dump_artmethod(tag, v);
+    }
     wl_naming_in_progress = 0;
 }
 
@@ -336,6 +462,10 @@ static void wl_name_java_method(void* ctx) {
     if (runtime->zygotePostForkCommon() != 0) {
         LOGW("zygotePostForkCommon non-zero — daemon restart may be incomplete");
     }
+
+    // §528: ART's own JIT creation is skipped both in the zygote (IsZygote()) and post-fork
+    // (InitNonZygoteOrPostFork is bypassed). Do it here, where the child's ART state is consistent.
+    wl_create_jit_after_fork();
 
     // 2026-07-09: restart the sigchain re-assert thread in the forked CHILD, now that
     // postForkChild/setcon are done (child may be multi-threaded). This keeps ART's
