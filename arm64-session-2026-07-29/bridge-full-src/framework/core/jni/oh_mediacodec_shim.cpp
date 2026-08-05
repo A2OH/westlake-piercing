@@ -197,7 +197,10 @@ static void cbInput(OH_AVCodec*, uint32_t idx, OH_AVBuffer* b, void* u) {
 }
 static void cbOutput(OH_AVCodec*, uint32_t idx, OH_AVBuffer* b, void* u) {
     Codec* c=(Codec*)u; OH_AVCodecBufferAttr a{}; if(b&&p_BufGetAttr) p_BufGetAttr(b,&a);
-    static int n=0; if(n++<6) MCLOG("cbOutput idx=%u size=%d buf=%p (OH produced PCM)", idx, a.size, (void*)b);
+    static long oN = 0; static long oBytes = 0;
+    oN++; oBytes += (a.size > 0 ? a.size : 0);
+    if (oN <= 3 || (oN % 250) == 0)
+        MCLOG("cbOutput #%ld idx=%u size=%d totalBytes=%ld (OH produced PCM)", oN, idx, a.size, oBytes);
     { std::lock_guard<std::mutex> l(c->mu); c->outQ.push_back({idx,a}); c->outBufs[idx]=b; } c->cv.notify_all();
     if (c->cb) fireAsyncOutput(c, idx, a);   // async ExoPlayer path
 }
@@ -331,7 +334,10 @@ static void dropBufObjLocked(JNIEnv* env, Codec* c, bool input, uint32_t index) 
 // native_queueInputBuffer(int index, int offset, int size, long pts, int flags)
 static void nQueueInput(JNIEnv* env, jobject thiz, jint index, jint offset, jint size, jlong pts, jint flags) {
     Codec* c = getCodec(env, thiz); if (!c || !c->codec) return;
-    static int dbg = 0; if (dbg++ < 8) MCLOG("queueInput idx=%d size=%d flags=%d (feeding MP3)", index, size, flags);
+    static long qN = 0; static long qBytes = 0;
+    qN++; qBytes += (size > 0 ? size : 0);
+    if (qN <= 3 || (qN % 250) == 0)
+        MCLOG("queueInput #%ld idx=%d size=%d flags=%d totalBytes=%ld (feeding MP3)", qN, index, size, flags, qBytes);
     OH_AVBuffer* b = nullptr;
     { std::lock_guard<std::mutex> l(c->mu);
       auto it = c->inBufs.find((uint32_t)index); if (it != c->inBufs.end()) b = it->second;

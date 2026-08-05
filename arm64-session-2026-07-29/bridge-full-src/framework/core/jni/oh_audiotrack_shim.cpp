@@ -229,7 +229,22 @@ static jint nWriteFloat(JNIEnv* env, jobject thiz, jfloatArray data, jint off, j
     int w=pushPcm(s,(const uint8_t*)tmp.data(), size*2, blocking);
     return w/2;
 }
-static jint nGetPos(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(!s) return 0; int64_t f=s->framesRendered; if(p_Frames&&s->renderer)p_Frames(s->renderer,&f); return (jint)f; }
+static long g_posCalls = 0;
+static jint nGetPos(JNIEnv* env, jobject thiz){
+    ATShim* s=getShim(env,thiz); if(!s) return 0;
+    int64_t f=s->framesRendered; if(p_Frames&&s->renderer)p_Frames(s->renderer,&f);
+    // §512: distinguishes "sink is alive and polling position" from "sink bailed and calls nothing".
+    // AudioTrack.write() returns ERROR_INVALID_OPERATION *before reaching native* when
+    // mState != STATE_INITIALIZED, so a silent write path and a dead sink look identical from the
+    // write side alone. Also report the ring occupancy, because a sink that is polling but never
+    // writing leaves count=0 forever.
+    long n = ++g_posCalls;
+    if (n <= 3 || (n % 100) == 0) {
+        size_t cnt; { std::lock_guard<std::mutex> l(s->mu); cnt = s->count; }
+        ATLOG("getPos #%ld frames=%lld ringBytes=%zu started=%d", n, (long long)f, cnt, (int)s->started);
+    }
+    return (jint)f;
+}
 static void nSetVolume(JNIEnv* env, jobject thiz, jfloat l, jfloat r){ ATShim* s=getShim(env,thiz); if(s&&p_SetVol&&s->renderer)p_SetVol(s->renderer,(l+r)/2.f); }
 static jint nMinBuf(JNIEnv*, jclass, jint rate, jint chCfg, jint fmt){ int ch=__builtin_popcount((unsigned)chCfg&0xFFFFF); if(ch<1)ch=2; int bpf=2*ch; int b=rate*bpf/10; if(b<4096)b=4096; return b; }
 
