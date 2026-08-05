@@ -180,11 +180,19 @@ static void nFlush(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(s
 static void nRelease(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(s){ { std::lock_guard<std::mutex> lk(s->mu); s->stopping=true; } s->spaceCv.notify_all(); if(p_Release&&s->renderer)p_Release(s->renderer); if(p_Destroy&&s->builder)p_Destroy(s->builder); env->SetLongField(thiz,g_fNative,0); delete s; ATLOG("release"); } }
 static void nFinalize(JNIEnv* env, jobject thiz){ nRelease(env,thiz); }
 
+static long g_writeCalls = 0;
+static void logWrite(jint size, jint rc, const char* via) {
+    long n = ++g_writeCalls;
+    if (n <= 5 || (n % 200) == 0)
+        ATLOG("write #%ld via=%s size=%d rc=%d", n, via, (int)size, (int)rc);
+}
+
 static jint nWriteByte(JNIEnv* env, jobject thiz, jbyteArray data, jint off, jint size, jint /*fmt*/, jboolean blocking){
     ATShim* s=getShim(env,thiz); if(!s) return -22;
     jbyte* buf=env->GetByteArrayElements(data,nullptr); if(!buf) return -1;
     int w=pushPcm(s,(const uint8_t*)(buf+off),size,blocking);
     env->ReleaseByteArrayElements(data,buf,JNI_ABORT);
+    logWrite(size, w, "byte[]");
     return w;
 }
 static jint nWriteShort(JNIEnv* env, jobject thiz, jshortArray data, jint off, jint size, jint /*fmt*/, jboolean blocking){
@@ -192,6 +200,7 @@ static jint nWriteShort(JNIEnv* env, jobject thiz, jshortArray data, jint off, j
     jshort* buf=env->GetShortArrayElements(data,nullptr); if(!buf) return -1;
     int w=pushPcm(s,(const uint8_t*)(buf+off), size*2, blocking);
     env->ReleaseShortArrayElements(data,buf,JNI_ABORT);
+    logWrite(size, w, "short[]");
     return w/2; // return in shorts
 }
 // §507 instrumentation: the write path was completely silent, so "no write markers in the log" was
@@ -200,19 +209,14 @@ static jint nWriteShort(JNIEnv* env, jobject thiz, jshortArray data, jint off, j
 // "volume data counts: 0" from the OH renderer, which is equally consistent with (a) ExoPlayer never
 // calling write, and (b) write being called and failing. Those need different fixes, so log it.
 // Rate-limited: the first few calls, then every 200th, so a working stream costs almost nothing.
-static long g_writeCalls = 0;
-static void logWrite(jint size, jint rc) {
-    long n = ++g_writeCalls;
-    if (n <= 5 || (n % 200) == 0) ATLOG("write #%ld size=%d rc=%d", n, (int)size, (int)rc);
-}
 
 static jint nWriteNative(JNIEnv* env, jobject thiz, jobject byteBuf, jint pos, jint size, jint /*fmt*/, jboolean blocking){
     ATShim* s=getShim(env,thiz);
-    if(!s) { logWrite(size, -22); return -22; }
+    if(!s) { logWrite(size, -22, "bytebuf"); return -22; }
     uint8_t* base=(uint8_t*)env->GetDirectBufferAddress(byteBuf);
-    if(!base) { logWrite(size, -1); return -1; }
+    if(!base) { logWrite(size, -1, "bytebuf"); return -1; }
     jint rc = pushPcm(s, base+pos, size, blocking);
-    logWrite(size, rc);
+    logWrite(size, rc, "bytebuf");
     return rc;
 }
 static jint nWriteFloat(JNIEnv* env, jobject thiz, jfloatArray data, jint off, jint size, jint /*fmt*/, jboolean blocking){

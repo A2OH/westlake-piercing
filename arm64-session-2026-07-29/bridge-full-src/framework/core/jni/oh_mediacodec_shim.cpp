@@ -111,6 +111,16 @@ struct Codec {
     // OH async delivers the OH_AVBuffer in the callback; retain it per index so
     // getBuffer/queueInput can use it (OH_AudioCodec_GetInputBuffer(idx) returns null).
     std::map<uint32_t, OH_AVBuffer*> inBufs, outBufs;
+    // §510: the ByteBuffer objects handed to Java, cached per index as GLOBAL refs.
+    // android.media.MediaCodec keeps a per-index cache (mCachedInputBuffers/mCachedOutputBuffers)
+    // and returns the SAME object for repeat getInputBuffer/getOutputBuffer(index) calls. Callers
+    // rely on that: ExoPlayer's DefaultAudioSink.handleBuffer opens with
+    //     Assertions.checkArgument(outputBuffer == null || buffer == outputBuffer);
+    // which is an IDENTITY comparison. Minting a fresh NewDirectByteBuffer per call fails it and
+    // throws a bare IllegalArgumentException (Assertions.checkArgument(boolean) passes no message —
+    // which is exactly the message-less IAE seen here), before a single PCM byte is written.
+    // releaseOutputBuffer then never runs, so the codec's output pool drains and cbOutput freezes.
+    std::map<uint32_t, jobject> inBufObjs, outBufObjs;
     int32_t sampleRate = 44100, channels = 2;
     bool formatSent = false;   // emit INFO_OUTPUT_FORMAT_CHANGED once (sync path)
     bool started = false;
@@ -283,7 +293,39 @@ static jobject nGetBuffer(JNIEnv* env, jobject thiz, jboolean input, jint index)
     uint8_t* addr = b ? p_BufAddr(b) : nullptr; int32_t cap = b ? p_BufCap(b) : 0;
     static int dbg = 0; if (dbg++ < 12) MCLOG("getBuffer in=%d idx=%d buf=%p addr=%p cap=%d", input, index, (void*)b, (void*)addr, cap);
     if (!b || !addr || cap <= 0) return nullptr;
-    return env->NewDirectByteBuffer(addr, cap);
+
+    // §510: return the SAME ByteBuffer for repeat calls on an index — see the note on inBufObjs.
+    // The cache is keyed on index and invalidated whenever the underlying OH_AVBuffer is handed
+    // back (releaseOutputBuffer / queueInputBuffer / flush / stop), so a stale mapping can never
+    // outlive the memory it points at.
+    std::lock_guard<std::mutex> l(c->mu);
+    auto& objs = input ? c->inBufObjs : c->outBufObjs;
+    auto oit = objs.find((uint32_t)index);
+    if (oit != objs.end() && oit->second != nullptr) {
+        // Guard against the address moving under a cached wrapper: if OH handed us a different
+        // backing pointer for this index, the old wrapper is stale and must be replaced.
+        void* cachedAddr = env->GetDirectBufferAddress(oit->second);
+        if (cachedAddr == (void*)addr) return oit->second;
+        env->DeleteGlobalRef(oit->second);
+        objs.erase(oit);
+    }
+    jobject local = env->NewDirectByteBuffer(addr, cap);
+    if (!local) return nullptr;
+    jobject global = env->NewGlobalRef(local);
+    env->DeleteLocalRef(local);
+    if (!global) return nullptr;
+    objs[(uint32_t)index] = global;
+    return global;
+}
+
+// §510: drop a cached ByteBuffer once its OH_AVBuffer goes back to the codec. Must be called with
+// c->mu held, or from a path that owns the codec exclusively.
+static void dropBufObjLocked(JNIEnv* env, Codec* c, bool input, uint32_t index) {
+    auto& objs = input ? c->inBufObjs : c->outBufObjs;
+    auto it = objs.find(index);
+    if (it == objs.end()) return;
+    if (it->second) env->DeleteGlobalRef(it->second);
+    objs.erase(it);
 }
 
 // native_queueInputBuffer(int index, int offset, int size, long pts, int flags)
@@ -291,7 +333,10 @@ static void nQueueInput(JNIEnv* env, jobject thiz, jint index, jint offset, jint
     Codec* c = getCodec(env, thiz); if (!c || !c->codec) return;
     static int dbg = 0; if (dbg++ < 8) MCLOG("queueInput idx=%d size=%d flags=%d (feeding MP3)", index, size, flags);
     OH_AVBuffer* b = nullptr;
-    { std::lock_guard<std::mutex> l(c->mu); auto it = c->inBufs.find((uint32_t)index); if (it != c->inBufs.end()) b = it->second; c->inBufs.erase((uint32_t)index); }
+    { std::lock_guard<std::mutex> l(c->mu);
+      auto it = c->inBufs.find((uint32_t)index); if (it != c->inBufs.end()) b = it->second;
+      c->inBufs.erase((uint32_t)index);
+      dropBufObjLocked(env, c, /*input=*/true, (uint32_t)index); }   // §510: buffer goes back to OH
     if (!b) b = p_GetInputBuffer(c->codec, index);
     if (b) { OH_AVCodecBufferAttr a{ pts, size, offset, (uint32_t)((flags & MC_FLAG_EOS)?OH_FLAG_EOS:OH_FLAG_NONE) }; p_BufSetAttr(b, &a); }
     p_PushInput(c->codec, (uint32_t)index);
@@ -325,7 +370,9 @@ static jint nDequeueOutput(JNIEnv* env, jobject thiz, jobject info, jlong timeou
 // releaseOutputBuffer(int index, boolean render, boolean updatePTS, long time)
 static void nReleaseOutput(JNIEnv* env, jobject thiz, jint index, jboolean, jboolean, jlong) {
     Codec* c = getCodec(env, thiz); if (!c || !c->codec) return;
-    { std::lock_guard<std::mutex> l(c->mu); c->outBufs.erase((uint32_t)index); }
+    { std::lock_guard<std::mutex> l(c->mu);
+      c->outBufs.erase((uint32_t)index);
+      dropBufObjLocked(env, c, /*input=*/false, (uint32_t)index); }   // §510
     p_FreeOutput(c->codec, (uint32_t)index);
 }
 
@@ -350,8 +397,13 @@ static jobject nGetOutputFormat(JNIEnv* env, jobject thiz, jint) { MCLOG("getOut
 static jobject nGetFormat(JNIEnv* env, jobject thiz, jboolean in) { MCLOG("getFormatNative(input=%d) called", in); return buildFormatMap(env, getCodec(env, thiz)); }
 
 static void nStop(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c&&c->codec&&g_ok) p_Stop(c->codec); }
-static void nFlush(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c){ {std::lock_guard<std::mutex> l(c->mu); c->inIdx.clear(); c->outQ.clear();} if(c->codec&&g_ok) p_Flush(c->codec);} }
-static void nRelease(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c){ if(c->codec&&g_ok) p_Destroy(c->codec); if(f_ctx) env->SetLongField(thiz,f_ctx,0); delete c; } }
+static void dropAllBufObjsLocked(JNIEnv* env, Codec* c) {   // §510
+    for (auto& kv : c->inBufObjs)  if (kv.second) env->DeleteGlobalRef(kv.second);
+    for (auto& kv : c->outBufObjs) if (kv.second) env->DeleteGlobalRef(kv.second);
+    c->inBufObjs.clear(); c->outBufObjs.clear();
+}
+static void nFlush(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c){ {std::lock_guard<std::mutex> l(c->mu); c->inIdx.clear(); c->outQ.clear(); c->inBufs.clear(); c->outBufs.clear(); dropAllBufObjsLocked(env, c);} if(c->codec&&g_ok) p_Flush(c->codec);} }
+static void nRelease(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c){ {std::lock_guard<std::mutex> l(c->mu); dropAllBufObjsLocked(env, c);} if(c->codec&&g_ok) p_Destroy(c->codec); if(f_ctx) env->SetLongField(thiz,f_ctx,0); delete c; } }
 static void nInit(JNIEnv*, jclass) {}
 static void nReset(JNIEnv* env, jobject thiz) { nFlush(env, thiz); }
 static void nSetCallback(JNIEnv* env, jobject thiz, jobject callback) {
