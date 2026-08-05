@@ -1325,6 +1325,15 @@ static bool wl_tls_init() {
     return g_tls.ready;
 }
 
+// §517: throw a NAMED exception. A read that timed out or failed is NOT end-of-stream, and the two
+// must not be reported the same way — see WL_TLS_read.
+static void wl_tls_throw_named(JNIEnv* env, const char* cls, const char* msg) {
+    if (env->ExceptionCheck()) return;   // never mask an exception already in flight
+    jclass c = env->FindClass(cls);
+    if (c == nullptr) { env->ExceptionClear(); c = env->FindClass("java/io/IOException"); }
+    if (c != nullptr) { env->ThrowNew(c, msg); env->DeleteLocalRef(c); }
+}
+
 static void wl_tls_throw_io(JNIEnv* env, const char* what, int err) {
     char buf[192];
     snprintf(buf, sizeof(buf), "WestlakeTLS: %s failed (ssl_err=%d)", what, err);
@@ -1448,8 +1457,16 @@ static jint WL_TLS_read(JNIEnv* env, jclass, jlong handle, jint fd, jbyteArray b
         }
         if (e == 2 /*WANT_READ*/ || e == 3 /*WANT_WRITE*/) {
             if (!wl_tls_wait((int)fd, e, deadline)) {
+                // §517: was `return -1`, which Java reports to the caller as END-OF-STREAM. A
+                // timeout mid-body then looks like a clean EOF: OkHttp raises "unexpected end of
+                // stream" and abandons the partially written cache entry. That is exactly how a
+                // 1,392,045-byte CDN body ended up frozen as a 1,056,459-byte .tmp, stalling
+                // playback after one segment. Report it as what it is.
                 wl_tls_log_io("read", "poll timeout/error", n, e, fd);
-                free(tmp); return -1;
+                free(tmp);
+                wl_tls_throw_named(env, "java/net/SocketTimeoutException",
+                                   "WestlakeTLS: read timed out");
+                return -1;
             }
             continue;
         }
@@ -1459,12 +1476,25 @@ static jint WL_TLS_read(JNIEnv* env, jclass, jlong handle, jint fd, jbyteArray b
             (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
             if (!wl_tls_wait((int)fd, 2 /*poll readable*/, deadline)) {
                 wl_tls_log_io("read", "poll after EAGAIN failed", n, e, fd);
-                free(tmp); return -1;
+                free(tmp);
+                wl_tls_throw_named(env, "java/net/SocketTimeoutException",
+                                   "WestlakeTLS: read timed out after EAGAIN");
+                return -1;
             }
             continue;
         }
+        // §517: SSL_ERROR_SYSCALL with n==0 and no errno is an unclean transport shutdown — the
+        // peer vanished without close_notify. That genuinely IS end of stream, so keep returning -1
+        // for it; anything else is a real error and must surface as one rather than as a silent
+        // truncation the caller cannot distinguish from success.
+        if (e == 5 /*SSL_ERROR_SYSCALL*/ && n == 0 && errno == 0) {
+            wl_tls_log_io("read", "unclean EOF (no close_notify)", n, e, fd);
+            free(tmp); return -1;
+        }
         wl_tls_log_io("read", "fatal", n, e, fd);
-        free(tmp); return -1;
+        free(tmp);
+        wl_tls_throw_named(env, "javax/net/ssl/SSLException", "WestlakeTLS: read failed");
+        return -1;
     }
     env->SetByteArrayRegion(buf, off, n, tmp);
     wl_tls_dump("<-- recv", tmp, n);
