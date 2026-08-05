@@ -227,6 +227,54 @@ static jint nMinBuf(JNIEnv*, jclass, jint rate, jint chCfg, jint fmt){ int ch=__
 // sink that was supposed to drain it no longer had a thread.
 static void nSetPlayerIId(JNIEnv*, jobject, jint) { }
 
+// §506: the same trap, once per round, all over DefaultAudioSink's setup path. ExoPlayer registers a
+// routing listener right after building the track (addOnRoutingChangedListener -> AudioRouting ->
+// native_enableDeviceCallback), and that one was unbound too, killing the audio thread exactly like
+// §505 did — the feed froze at the identical queueInput=16/cbOutput=4.
+//
+// So rather than discover these one 15-minute round at a time, bind the whole cluster whose
+// semantics are unambiguous on this platform. Every method below reports or subscribes to state
+// owned by AudioService / AudioPolicy — device routing, port ids, output flags, underruns, log
+// session ids. We have none of those, so "nothing to report" IS the correct answer, and returning it
+// is strictly better than leaving an Error-throwing stub.
+//
+// ⚠️Deliberately NOT bound here: native_get_timestamp, native_get_buffer_size_frames,
+// native_set_buffer_size_frames, native_applyVolumeShaper and friends. Those have real semantics
+// that ExoPlayer's position tracking depends on, and inventing values would trade a loud crash for
+// silent drift. Leave them until evidence names them.
+static void nEnableDeviceCb(JNIEnv*, jobject) { }
+static void nDisableDeviceCb(JNIEnv*, jobject) { }
+static jint nRoutedDeviceId(JNIEnv*, jobject) { return 0; }   // 0 = unknown/default device
+static jint nPortId(JNIEnv*, jobject) { return 0; }
+static jint nGetFlags(JNIEnv*, jobject) { return 0; }         // no AUDIO_OUTPUT_FLAG_* apply
+static jint nUnderrunCount(JNIEnv*, jobject) { return 0; }
+static jint nGetLatency(JNIEnv*, jobject) { return 0; }
+static void nSetLogSessionId(JNIEnv*, jobject, jstring) { }
+
+// §506b: the rest of what ExoPlayer can actually reach, taken from a static scan of the app dex
+// (tools/FindClassRefs.java on Landroid/media/AudioTrack;) rather than from another round of
+// discover-one-crash-at-a-time. That scan is also why getBufferSizeInFrames is absent here: the app
+// never references it, so binding it would be speculation.
+//
+// Each of these returns the honest "not available / not supported" answer rather than a plausible
+// lie, because ExoPlayer degrades gracefully on all of them:
+//   getTimestamp   -> non-zero status makes AudioTrack.getTimestamp() return false, and
+//                     AudioTimestampPoller falls back to getPlaybackHeadPosition(), which IS real
+//                     here (backed by OH_AudioRenderer frames written).
+//   direct output  -> false keeps ExoPlayer on the decode path that already works, instead of
+//                     attempting MP3 passthrough this renderer cannot do.
+//   preferred device -> false; we have no routing to honour and saying otherwise would be a lie.
+// ⚠️AudioTimestampPoller calls getTimestamp with NO catch, so leaving it unbound is fatal, while
+// answering "unavailable" is a state real devices report routinely.
+static jint nGetTimestamp(JNIEnv*, jobject, jlongArray) { return -1; }         // != SUCCESS
+static jint nAttachAuxEffect(JNIEnv*, jobject, jint) { return 0; }             // SUCCESS, no-op
+static jint nSetAuxSendLevel(JNIEnv*, jobject, jfloat) { return 0; }
+static jboolean nSetOutputDevice(JNIEnv*, jobject, jint) { return JNI_FALSE; }
+static void nSetDelayPadding(JNIEnv*, jobject, jint, jint) { }
+static jboolean nIsDirectSupported(JNIEnv*, jclass, jint, jint, jint, jint, jint, jint, jint) {
+    return JNI_FALSE;
+}
+
 int register_AudioTrack_shim(JNIEnv* env) {
     if (!loadOhAudio()) { ATERR("OH audio unavailable; AudioTrack shim NOT registered"); return -1; }
     jclass c = env->FindClass("android/media/AudioTrack");
@@ -248,13 +296,39 @@ int register_AudioTrack_shim(JNIEnv* env) {
         {"native_get_position", "()I", (void*)nGetPos},
         {"native_setVolume", "(FF)V", (void*)nSetVolume},
         {"native_get_min_buff_size", "(III)I", (void*)nMinBuf},
-        // §505: no-op, but it MUST be bound — see nSetPlayerIId above.
+        // §505/§506: no-ops, but they MUST be bound — see nSetPlayerIId above. Per-method
+        // registration below means any that this framework.jar does not declare are skipped
+        // harmlessly rather than taking the whole table down with them.
         {"native_setPlayerIId", "(I)V", (void*)nSetPlayerIId},
+        {"native_enableDeviceCallback", "()V", (void*)nEnableDeviceCb},
+        {"native_disableDeviceCallback", "()V", (void*)nDisableDeviceCb},
+        {"native_getRoutedDeviceId", "()I", (void*)nRoutedDeviceId},
+        {"native_getPortId", "()I", (void*)nPortId},
+        {"native_get_flags", "()I", (void*)nGetFlags},
+        {"native_get_underrun_count", "()I", (void*)nUnderrunCount},
+        {"native_get_latency", "()I", (void*)nGetLatency},
+        {"native_setLogSessionId", "(Ljava/lang/String;)V", (void*)nSetLogSessionId},
+        {"native_get_timestamp", "([J)I", (void*)nGetTimestamp},
+        {"native_attachAuxEffect", "(I)I", (void*)nAttachAuxEffect},
+        {"native_setAuxEffectSendLevel", "(F)I", (void*)nSetAuxSendLevel},
+        {"native_setOutputDevice", "(I)Z", (void*)nSetOutputDevice},
+        {"native_set_delay_padding", "(II)V", (void*)nSetDelayPadding},
+        {"native_is_direct_output_supported", "(IIIIIII)Z", (void*)nIsDirectSupported},
     };
-    int n = sizeof(m)/sizeof(m[0]); int ok=0;
-    for (int i=0;i<n;i++){ if(env->RegisterNatives(c,&m[i],1)==0) ok++; else { if(env->ExceptionCheck())env->ExceptionClear(); ATERR("reg fail: %s", m[i].name);} }
-    ATLOG("AudioTrack shim registered %d/%d", ok, n);
-    return ok==n?0:-1;
+    int n = sizeof(m)/sizeof(m[0]);
+    // Entries from kFirstOptional on are the §505/§506 no-ops. Whether a given framework.jar
+    // declares each of them varies by API level, and a method this AudioTrack.java does not declare
+    // is not an error — so a miss there must not fail the shim and hide a real core-method failure.
+    const int kFirstOptional = 14;
+    int ok=0, reqFail=0;
+    for (int i=0;i<n;i++){
+        if (env->RegisterNatives(c,&m[i],1)==0) { ok++; continue; }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (i < kFirstOptional) { reqFail++; ATERR("reg fail (required): %s", m[i].name); }
+        else                    { ATLOG("not declared, skipped: %s", m[i].name); }
+    }
+    ATLOG("AudioTrack shim registered %d/%d (required failures=%d)", ok, n, reqFail);
+    return reqFail==0?0:-1;
 }
 
 } // extern "C"
