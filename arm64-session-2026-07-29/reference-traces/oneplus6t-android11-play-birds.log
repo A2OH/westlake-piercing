@@ -1,0 +1,60 @@
+08-04 21:20:51.239  3870  3870 I ExoPlayerImpl: Init 8392e41 [ExoPlayerLib/2.18.5] [OnePlus6T, ONEPLUS A6013, OnePlus, 30]
+08-04 21:20:51.271  3870  3870 D LocalSoundPlayer: loadSoundMetadata: loading sound metadata
+08-04 21:20:51.278  3870  3870 I AudioFocusManager: requestFocus: audio focus request granted
+08-04 21:20:51.278  3870  3870 D SoundPlayerManager: onSoundPlayerStateChange: birds=BUFFERING
+08-04 21:20:51.304  3870  3870 D SoundPlaybackService: onSoundPlayerManagerStateChange: playback ongoing, ensuring resources
+08-04 21:20:51.615  3870  3870 D LocalSoundPlayer: loadSoundMetadata: starting playback
+08-04 21:20:51.615  3870  3870 D LocalSoundPlayer: queueNextSegment: queuing birds_3
+08-04 21:20:51.617  3870  3870 D LocalSoundPlayer: queueNextSegment: queuing birds_3_birds_3
+08-04 21:20:51.619  3870  3870 D LocalSoundPlayer: onMediaPlayerStateChanged: state=IDLE
+08-04 21:20:51.619  3870  3870 D SoundPlayerManager: onSoundPlayerStateChange: birds=PLAYING
+08-04 21:20:51.622  3870  3870 D LocalSoundPlayer: onMediaPlayerStateChanged: state=BUFFERING
+08-04 21:20:51.622  3870  3870 D SoundPlayerManager: onSoundPlayerStateChange: birds=BUFFERING
+08-04 21:20:51.709  3870 12778 I okhttp.OkHttpClient: --> GET https://cdn.trynoice.com/library/segments/birds/birds_3/128k.mp3 h2
+08-04 21:20:51.800  3870 12778 I okhttp.OkHttpClient: <-- 200 https://cdn.trynoice.com/library/segments/birds/birds_3/128k.mp3 (90ms, 1392045-byte body)
+08-04 21:20:51.849  3870 12771 W VideoCapabilities: Unsupported mime image/vnd.android.heic
+08-04 21:20:51.850  3870 12771 W VideoCapabilities: Unrecognized profile/level 0/3 for video/mpeg2
+08-04 21:20:51.850  3870 12771 W VideoCapabilities: Unrecognized profile/level 0/3 for video/mpeg2
+08-04 21:20:51.850  3870 12771 W VideoCapabilities: Unsupported mime video/x-ms-wmv
+08-04 21:20:51.866  3870 12785 D CCodec  : allocate(c2.android.mp3.decoder)
+08-04 21:20:51.876  3870 12785 I CCodec  : Created component [c2.android.mp3.decoder]
+08-04 21:20:51.876  3870 12785 D CCodecConfig: read media type: audio/mpeg
+08-04 21:20:51.878  3870 12785 I CCodecConfig: query failed after returning 7 values (BAD_INDEX)
+08-04 21:20:51.879  3870 12785 D CCodecConfig: c2 config diff is Dict {
+08-04 21:20:51.879  3870 12785 D CCodecConfig: }
+08-04 21:20:51.879  3870 12785 D CCodec  : [c2.android.mp3.decoder] buffers are bound to CCodec for this session
+08-04 21:20:51.879  3870 12785 D CCodecConfig: no c2 equivalents for flags
+08-04 21:20:51.879  3870 12785 D CCodecConfig: config failed => CORRUPTED
+08-04 21:20:51.879  3870 12785 D CCodecConfig: c2 config diff is   c2::u32 raw.sample-rate.value = 48000
+08-04 21:20:51.880  3870 12785 D CCodec  : client requested max input size 4096, which is smaller than what component recommended (8192); overriding with component recommendation.
+08-04 21:20:51.880  3870 12785 W CCodec  : This behavior is subject to change. It is recommended that app developers double check whether the requested max input size is in reasonable range.
+08-04 21:20:51.880  3870 12785 D CCodec  : setup formats input: AMessage(what = 0x00000000) = {
+08-04 21:20:51.880  3870 12785 D CCodec  :   int32_t channel-count = 2
+08-04 21:20:51.880  3870 12785 D CCodec  :   int32_t max-input-size = 8192
+08-04 21:20:51.880  3870 12785 D CCodec  :   string mime = "audio/mpeg"
+08-04 21:20:51.880  3870 12785 D CCodec  :   int32_t sample-rate = 48000
+08-04 21:20:51.880  3870 12785 D CCodec  : } and output: AMessage(what = 0x00000000) = {
+08-04 21:20:51.880  3870 12785 D CCodec  :   int32_t channel-count = 2
+08-04 21:20:51.880  3870 12785 D CCodec  :   string mime = "audio/raw"
+08-04 21:20:51.880  3870 12785 D CCodec  :   int32_t sample-rate = 48000
+08-04 21:20:51.880  3870 12785 D CCodec  : }
+08-04 21:20:51.882  3870 12785 D CCodecBufferChannel: [c2.android.mp3.decoder#688] Created input block pool with allocatorID 16 => poolID 17 - OK (0)
+08-04 21:20:51.882  3870 12785 I CCodecBufferChannel: [c2.android.mp3.decoder#688] Created output block pool with allocatorID 16 => poolID 61 - OK
+08-04 21:20:51.882  3870 12785 D CCodecBufferChannel: [c2.android.mp3.decoder#688] Configured output block pool ids 61 => OK
+08-04 21:20:51.883  3870 12785 D CCodecBufferChannel: [c2.android.mp3.decoder#688] start: updating output delay 0
+08-04 21:20:51.892  3870 12771 D AudioTrack: set(): streamType -1, sampleRate 48000, format 0x1, channelMask 0x3, frameCount 15376, flags #0, notificationFrames 0, sessionId 305, transferType 3, uid -1, pid -1
+08-04 21:20:51.903  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.000000 right 0.000000
+08-04 21:20:51.908  3870 12771 D AudioTrack: ClientUid 10207 AudioTrack::start 
+08-04 21:20:51.909  3870  3870 V MediaRouter: Selecting route: RouteInfo{ name=Phone, description=null, status=null, category=RouteCategory{ name=System types=ROUTE_TYPE_LIVE_AUDIO ROUTE_TYPE_LIVE_VIDEO  groupable=false }, supportedTypes=ROUTE_TYPE_LIVE_AUDIO ROUTE_TYPE_LIVE_VIDEO , presentationDisplay=null }
+08-04 21:20:51.930  3870  3870 D LocalSoundPlayer: onMediaPlayerStateChanged: state=PLAYING
+08-04 21:20:51.930  3870  3870 D SoundPlayerManager: onSoundPlayerStateChange: birds=PLAYING
+08-04 21:20:51.980  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.010000 right 0.010000
+08-04 21:20:52.032  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.020400 right 0.020400
+08-04 21:20:52.085  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.030800 right 0.030800
+08-04 21:20:52.135  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.041000 right 0.041000
+08-04 21:20:52.187  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.051200 right 0.051200
+08-04 21:20:52.238  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.061600 right 0.061600
+08-04 21:20:52.291  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.072000 right 0.072000
+08-04 21:20:52.341  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.082000 right 0.082000
+08-04 21:20:52.393  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.092400 right 0.092400
+08-04 21:20:52.443  3870 12771 D AudioTrack: Uid 10207 AudioTrack::setVolume left 0.102600 right 0.102600

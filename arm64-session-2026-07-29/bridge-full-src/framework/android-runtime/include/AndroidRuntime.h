@@ -43,6 +43,7 @@ public:
 // Each is defined in its own .cpp and added to the dispatch table inside
 // AndroidRuntime::startReg when Hello World or later stages need it.
 int register_android_util_Log(JNIEnv* env);
+int register_libcore_io_Memory(JNIEnv* env);
 int register_android_util_EventLog(JNIEnv* env);
 int register_android_app_Activity(JNIEnv* env);
 int register_android_view_SurfaceSession(JNIEnv* env);

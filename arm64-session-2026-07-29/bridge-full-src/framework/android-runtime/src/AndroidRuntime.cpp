@@ -149,6 +149,12 @@ extern int register_android_database_SQLiteConnection(JNIEnv* env);
 extern int register_android_database_CursorWindow(JNIEnv* env);
 static const RegJNIRec kRegJNI[] = {
     { "register_android_util_Log",            register_android_util_Log },
+    // §504 (2026-08-04): libcore.io.Memory ships in libjavacore.so upstream,
+    // which this port does not have, so DirectByteBuffer's bulk copies were
+    // unbound. Register early — every java.nio direct-buffer write depends on
+    // it, and the resulting UnsatisfiedLinkError is an Error, so it kills the
+    // calling thread outright instead of surfacing as a catchable exception.
+    { "register_libcore_io_Memory",           register_libcore_io_Memory },
     { "register_android_util_EventLog",       register_android_util_EventLog },
     { "register_android_app_Activity",        register_android_app_Activity },
     { "register_android_os_SystemProperties", register_android_os_SystemProperties },
