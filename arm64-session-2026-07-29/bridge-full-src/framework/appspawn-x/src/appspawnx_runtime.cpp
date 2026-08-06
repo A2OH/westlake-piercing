@@ -250,8 +250,31 @@ int AppSpawnXRuntime::startVm() {
     }
     if (const char* v = getenv("APPSPAWNX_FORCE_JIT"); v && strcmp(v, "1") == 0) {
         options.push_back(makeOption("-Xusejit:true"));
-        options.push_back(makeOption("-Xjitthreshold:1"));   // compile almost immediately
-        LOGW("ART JIT FORCED ON via APPSPAWNX_FORCE_JIT=1 (threshold=1)");
+        // §531: do NOT force -Xjitthreshold:1. That was my own aggressive setting to get compilation
+        // happening immediately, and it is the likely cause of the StackOverflowError seen with the
+        // JIT on: at threshold 1 every method compiles on its FIRST call, so compilation kicks off
+        // during class initialisation, which resolves more classes, which compiles more methods —
+        // re-entrant until an 8MB stack is exhausted ("StackOverflowError: stack size 8182KB", i.e.
+        // real runaway recursion, not missing headroom). ART's default threshold lets startup run
+        // interpreted and only compiles genuinely hot methods.
+        if (const char* t = getenv("APPSPAWNX_JIT_THRESHOLD"); t && *t) {
+            std::string opt = std::string("-Xjitthreshold:") + t;
+            options.push_back(makeOption(opt.c_str()));
+            LOGW("ART JIT FORCED ON (threshold=%s)", t);
+        } else {
+            LOGW("ART JIT FORCED ON via APPSPAWNX_FORCE_JIT=1 (ART default threshold)");
+        }
+    }
+    // §530: with the JIT on, the child died with java.lang.StackOverflowError inside
+    // AppSpawnXInit.initChild(). InstallImplicitProtection SUCCEEDED (no "Unable to create protected
+    // region"), so the guard page is fine — the suspicion is that compiled frames need more headroom
+    // than the interpreter did, which is exactly the condition libart's
+    // "Need to increase kStackOverflowReservedBytes (currently ...)" guards.
+    // Java thread stack size is the cheapest lever to test that.
+    if (const char* v = getenv("APPSPAWNX_XSS"); v && *v) {
+        std::string opt = std::string("-Xss") + v;
+        options.push_back(makeOption(opt.c_str()));
+        LOGW("ART thread stack size set to %s via APPSPAWNX_XSS", v);
     }
 
     // 2026-05-01 G2.14n DIAGNOSTIC: disable JIT.
