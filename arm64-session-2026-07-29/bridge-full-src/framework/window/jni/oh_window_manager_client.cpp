@@ -2192,11 +2192,26 @@ void OHWindowManagerClient::destroySession(int32_t sessionId) {
         auto nit = nodes.find(sessionId);
         std::shared_ptr<OHOS::Rosen::RSSurfaceNode> windowNode =
             (nit != nodes.end()) ? nit->second : nullptr;
-        if (contentNode != nullptr) { contentNode->RemoveFromTree(); }
-        if (windowNode != nullptr && windowNode != contentNode) { windowNode->RemoveFromTree(); }
+        // WESTLAKE §567 — RemoveFromTree() ALONE IS NOT ENOUGH FOR THESE NODES.
+        // It only unlinks a node from a PARENT, but our window surfaces are top-level nodes
+        // registered with RS directly (RSSurfaceNode::Create round-trips to RenderService and
+        // hands back a producer Surface), so they have no parent to be unlinked from and RS keeps
+        // compositing them. Measured: dismissing the Save-Preset bottom sheet logged
+        // "§538 detached RS nodes for session=2 (content=1 window=0)" and RSTree STILL showed the
+        // dialog's SURFACE_NODE with `Visible: 1` on top of the main window — the whole screen
+        // stayed black, through further taps and a tab switch, while the app kept running and
+        // playing audio. Hiding the node is what actually stops composition, so do that too.
+        auto wl_hide = [](const std::shared_ptr<OHOS::Rosen::RSSurfaceNode>& n) {
+            if (n == nullptr) return;
+            n->SetVisible(false);
+            n->MarkUIHidden(true);
+            n->RemoveFromTree();
+        };
+        wl_hide(contentNode);
+        if (windowNode != contentNode) { wl_hide(windowNode); }
         if (nit != nodes.end()) { nodes.erase(nit); }
         OHOS::Rosen::RSTransaction::FlushImplicitTransaction();
-        fprintf(stderr, "[WESTLAKE-WMC] §538 detached RS nodes for session=%d (content=%d window=%d)\n",
+        fprintf(stderr, "[WESTLAKE-WMC] §538/§567 hid+detached RS nodes for session=%d (content=%d window=%d)\n",
                 sessionId, contentNode != nullptr ? 1 : 0, windowNode != nullptr ? 1 : 0);
         fflush(stderr);
     }
