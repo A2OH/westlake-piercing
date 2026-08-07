@@ -281,12 +281,103 @@ extern "C" char* strstr(const char* h, const char* n) {
     }
 }
 
-// NOT interposed: getenv.
+// §557: getenv IS now interposed — but with an index cache, not a value cache.
 //
-// It measured 2.79% — real, but an order of magnitude below strstr — and replacing it is the
-// riskier of the two by far. Its correct behaviour is entangled with setenv/putenv/unsetenv
-// mutating `environ` concurrently, and musl has an exact rule about names containing '=' that a
-// rewrite has to reproduce byte for byte. Two straight startup failures on the version that
-// changed strstr AND getenv together made the cost of bundling them obvious: 39% is worth a
-// careful change, 2.79% is not worth an uncertain one. If it is ever wanted, it belongs in its
-// own change with its own before/after runs.
+// §532 measured getenv at 2.79% and deliberately left it alone: "a cache would go stale on
+// setenv/putenv from another thread". That reasoning was right about a VALUE cache. Meanwhile a
+// profile taken during real work (a tab switch) puts it at **7.2%**, because libart's per-invoke
+// predicates call it on every interpreted invoke and musl's getenv is a linear scan of the whole
+// environment — this child has ~40 entries, so a miss walks all of them.
+//
+// The trick that makes it safe: cache the INDEX into `environ`, never the value, and re-validate
+// that index on every hit by checking `environ[i]` still begins with "name=". That is O(len(name))
+// instead of O(entries), and it stays correct under mutation without interposing setenv/putenv:
+//   * setenv replacing a value  -> environ[i] still starts with "name=", and we return a pointer
+//                                  INTO the current environ[i], i.e. the NEW value. Correct.
+//   * unsetenv / reordering     -> the check fails, we fall back to a full scan and re-cache.
+//   * environ replaced wholesale-> same, the check fails and we rescan.
+// A miss (name absent) is NOT cached: that is the one case where caching could invent a wrong
+// answer after a later setenv, and it is also the case libart hits most, so it must stay honest.
+// Host-verified against the real getenv in tools/test_wl_fastlibc.cpp.
+namespace {
+constexpr int kEnvSlots = 64;
+struct EnvSlot { const char* name; int idx; };   // idx < 0 => known ABSENT
+EnvSlot g_env[kEnvSlots];
+int g_envCount = 0;
+
+// §557b: absent names must be cached too, or nothing improves. libart's predicates mostly ask for
+// debug variables that are NOT set, and a miss is the expensive case — it walks the entire
+// environment every single invoke. Caching "absent" is only sound while the environment is
+// unchanged, so stamp the cache with (environ pointer, entry count) and drop it whenever either
+// moves: adding a variable changes the count (and usually the pointer, since setenv reallocs), and
+// replacing an existing value cannot turn an absent name into a present one.
+char** g_envPtr = nullptr;
+int g_envLen = -1;
+
+inline int wl_env_len() {
+    char** e = environ;
+    if (e == nullptr) return 0;
+    int n = 0;
+    while (e[n] != nullptr) ++n;
+    return n;
+}
+// Returns true if the cache is still valid for the current environment; refreshes the stamp.
+inline bool wl_env_stamp_ok() {
+    char** e = environ;
+    const int n = wl_env_len();
+    if (e == g_envPtr && n == g_envLen) return true;
+    g_envPtr = e; g_envLen = n; g_envCount = 0;   // environment moved -> drop everything
+    return false;
+}
+
+// Does environ[i] start with "name="? Returns the value pointer, or null.
+inline const char* wl_env_match(int i, const char* name) {
+    char** e = environ;
+    if (e == nullptr || i < 0) return nullptr;
+    // walk to entry i without calling strlen on the whole array
+    for (int k = 0; k < i; ++k) { if (e[k] == nullptr) return nullptr; }
+    const char* entry = e[i];
+    if (entry == nullptr) return nullptr;
+    const char* n = name;
+    while (*n != '\0' && *entry == *n) { ++entry; ++n; }
+    return (*n == '\0' && *entry == '=') ? entry + 1 : nullptr;
+}
+}  // namespace
+
+extern "C" char* getenv(const char* name) {
+    if (name == nullptr || name[0] == '\0') return nullptr;
+    const bool fresh = wl_env_stamp_ok();               // also clears the cache if environ moved
+    if (fresh) {
+        for (int s = 0; s < g_envCount; ++s) {
+            if (g_env[s].name == name) {                // pointer compare: libart passes literals
+                if (g_env[s].idx < 0) return nullptr;   // cached ABSENT, valid for this stamp
+                const char* v = wl_env_match(g_env[s].idx, name);
+                if (v != nullptr) return const_cast<char*>(v);
+                break;                                   // moved within an unchanged environ -> rescan
+            }
+        }
+    }
+    // full scan
+    char** e = environ;
+    if (e != nullptr) {
+        for (int i = 0; e[i] != nullptr; ++i) {
+            const char* entry = e[i];
+            const char* n = name;
+            while (*n != '\0' && *entry == *n) { ++entry; ++n; }
+            if (*n == '\0' && *entry == '=') {
+                if (g_envCount < kEnvSlots) {           // remember WHERE, never WHAT
+                    g_env[g_envCount].name = name;
+                    g_env[g_envCount].idx = i;
+                    ++g_envCount;
+                }
+                return const_cast<char*>(entry + 1);
+            }
+        }
+    }
+    if (g_envCount < kEnvSlots) {                        // remember ABSENT under the current stamp
+        g_env[g_envCount].name = name;
+        g_env[g_envCount].idx = -1;
+        ++g_envCount;
+    }
+    return nullptr;
+}

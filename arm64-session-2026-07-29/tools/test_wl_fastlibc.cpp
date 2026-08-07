@@ -7,12 +7,29 @@
 #include <string>
 #include <vector>
 
+// ⚠️Pull in the C headers FIRST so their include guards fire before the renames below.
+// libstdc++'s <stdlib.h> does `using std::getenv;` at namespace scope, and with the macro active
+// that becomes `using std::wl_getenv;` -> "not declared in std".
+#include <stdlib.h>
+#include <string.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdint.h>
+
 // Our implementation, renamed so it can coexist with glibc's in one binary.
 #define strstr wl_strstr
+#define getenv wl_getenv
+// The file calls getenv() from its constructor, i.e. BEFORE it defines getenv() further down.
+// Normally <stdlib.h> supplies that declaration; under the rename it does not, so forward-declare.
+// (No device-side equivalent: our getenv only reads `environ`, so a constructor call is safe.)
+extern "C" char* wl_getenv(const char*);
 #include "wl_fastlibc_under_test.cpp"
 #undef strstr
+#undef getenv
 
 extern "C" char* wl_strstr(const char*, const char*);
+extern "C" char* wl_getenv(const char*);
 
 static int failures = 0;
 static long checks = 0;
@@ -84,6 +101,48 @@ int main() {
         std::printf("dump: %d lines, %d malformed\n", lines, bad);
         if (bad) ++failures;
         if (lines < 2) { std::printf("DUMP EMPTY\n"); ++failures; }
+    }
+
+    // §557 getenv differential: cached-index lookups must agree with the real getenv, including
+    // across a setenv that CHANGES a value and an unsetenv that REMOVES one (the two cases an
+    // index cache has to survive).
+    {
+        const char* names[] = {"PATH","HOME","LANG","NOT_SET_XYZ","WL_TEST_A","SHELL","USER","TERM"};
+        int gfail = 0; long gchecks = 0;
+        setenv("WL_TEST_A", "one", 1);
+        for (int round = 0; round < 3; ++round) {
+            if (round == 1) setenv("WL_TEST_A", "two-longer", 1);   // value change
+            if (round == 2) unsetenv("WL_TEST_A");                  // removal
+            for (int rep = 0; rep < 50; ++rep)
+                for (const char* n : names) {
+                    const char* a = wl_getenv(n);
+                    const char* b = getenv(n);
+                    ++gchecks;
+                    bool same = (a == nullptr && b == nullptr) ||
+                                (a != nullptr && b != nullptr && std::strcmp(a, b) == 0);
+                    if (!same && ++gfail <= 5)
+                        std::printf("GETENV MISMATCH round=%d %s: ours=%s real=%s\n",
+                                    round, n, a ? a : "(null)", b ? b : "(null)");
+                }
+        }
+        // ★The dangerous direction for a NEGATIVE cache: query while absent (caches "absent"),
+        // then create it, then query again. A cache that does not invalidate returns null forever.
+        for (int rep = 0; rep < 20; ++rep) (void)wl_getenv("WL_LATE_ADD");   // cache it as absent
+        setenv("WL_LATE_ADD", "appeared", 1);
+        for (int rep = 0; rep < 20; ++rep) {
+            const char* a = wl_getenv("WL_LATE_ADD");
+            const char* b = getenv("WL_LATE_ADD");
+            ++gchecks;
+            bool same = (a == nullptr && b == nullptr) ||
+                        (a != nullptr && b != nullptr && std::strcmp(a, b) == 0);
+            if (!same && ++gfail <= 5)
+                std::printf("GETENV STALE-NEGATIVE: ours=%s real=%s\n",
+                            a ? a : "(null)", b ? b : "(null)");
+        }
+        unsetenv("WL_LATE_ADD");
+
+        std::printf("getenv: %ld comparisons, %d failures\n", gchecks, gfail);
+        failures += gfail;
     }
 
     std::printf(failures == 0 ? "\nALL OK (%ld comparisons)\n" : "\nFAILURES (%ld comparisons)\n",

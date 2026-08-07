@@ -2500,7 +2500,12 @@ void OHInputBridge::startTapControlChannel() {
     std::thread([]() {
         const char* path = "/data/local/tmp/noice_tap";
         for (;;) {
-            usleep(300 * 1000);
+            // §558: was 300 ms. This poll is on the critical path of EVERY interaction, real
+            // fingers included: touchfwd(1) reads /dev/input and writes this same file, so a
+            // physical tap waited up to 300 ms (avg 150) before the bridge even looked. 25 ms
+            // costs nothing measurable (an idle open()+read() of a tiny tmpfs file) and takes
+            // that straight off perceived latency.
+            usleep(25 * 1000);
             FILE* f = fopen(path, "r");
             if (!f) continue;
             char buf[64] = {0};
@@ -2682,7 +2687,7 @@ void OHInputBridge::startTextControlChannel() {
             dispatchKeyViaViewRoot(1 /*ACTION_UP*/, code, t, t, meta);
         };
         for (;;) {
-            usleep(250 * 1000);
+            usleep(25 * 1000);   // §558: same reasoning as the tap channel above.
             FILE* f = fopen(path, "r");
             if (!f) continue;
             char buf[512] = {0};
