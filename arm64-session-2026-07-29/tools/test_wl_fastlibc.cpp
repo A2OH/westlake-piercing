@@ -103,6 +103,32 @@ int main() {
         if (lines < 2) { std::printf("DUMP EMPTY\n"); ++failures; }
     }
 
+    // §562 SWAR alignment sweep: the word scan reads 8-byte ALIGNED words after a byte prologue,
+    // so every (start alignment x length) combination must be exercised, not just heap-aligned
+    // strings. Walk a buffer at all 8 offsets, all lengths 0..40, against the real strstr.
+    {
+        char buf[128];
+        int afail = 0; long achecks = 0;
+        const char* needles[] = {"a","z","ab","abc","xyz","q","Landroid","/","\0z"+1};
+        for (int off = 0; off < 8; ++off)
+            for (int len = 0; len <= 40; ++len) {
+                char* h = buf + off;
+                for (int i = 0; i < len; ++i) h[i] = (char)('a' + (i * 7 + off) % 26);
+                h[len] = '\0';
+                for (const char* n : needles) {
+                    const char* a = wl_strstr(h, n);
+                    const char* b = strstr(h, n);
+                    ++achecks;
+                    long ga = a ? a - h : -1, gb = b ? b - h : -1;
+                    if (ga != gb && ++afail <= 5)
+                        std::printf("SWAR MISMATCH off=%d len=%d n=\"%s\" got=%ld want=%ld\n",
+                                    off, len, n, ga, gb);
+                }
+            }
+        std::printf("swar alignment sweep: %ld comparisons, %d failures\n", achecks, afail);
+        failures += afail;
+    }
+
     // §557 getenv differential: cached-index lookups must agree with the real getenv, including
     // across a setenv that CHANGES a value and an unsetenv that REMOVES one (the two cases an
     // index cache has to survive).

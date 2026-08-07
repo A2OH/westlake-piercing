@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <thread>
 #include <sys/uio.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -465,7 +466,28 @@ static void wl_name_java_method(void* ctx) {
 
     // §528: ART's own JIT creation is skipped both in the zygote (IsZygote()) and post-fork
     // (InitNonZygoteOrPostFork is bypassed). Do it here, where the child's ART state is consistent.
-    wl_create_jit_after_fork();
+    //
+    // §560: ...but NOT during startup. Enabling the JIT here makes initChild die with
+    //     java.lang.StackOverflowError: stack size 8182KB
+    // every time -- at ART's DEFAULT threshold, at 20000, and with -Xss32m (which does not even
+    // reach this thread: the message still says 8182KB, because it is the main thread's fixed
+    // stack). So it is not headroom and not compile frequency; it is re-entrancy -- compiling
+    // during class initialisation resolves more classes, which compiles more methods.
+    // ⚠️There is no "after initChild" hook to move this to: initChild enters Looper.loop() and
+    // never returns. So defer it onto a timer thread instead -- startup runs interpreted (safe),
+    // and steady-state (tab switches, scrolling: the part that actually feels slow) gets compiled
+    // code. APPSPAWNX_JIT_DELAY_MS=N picks the delay; unset keeps the old immediate behaviour.
+    if (const char* d = getenv("APPSPAWNX_JIT_DELAY_MS"); d != nullptr && *d != '\0') {
+        const long ms = strtol(d, nullptr, 10);
+        LOGW("[JIT-560] deferring Runtime::CreateJit() by %ld ms (startup stays interpreted)", ms);
+        std::thread([ms]() {
+            usleep((useconds_t)(ms * 1000));
+            LOGW("[JIT-560] delay elapsed — enabling JIT now");
+            wl_create_jit_after_fork();
+        }).detach();
+    } else {
+        wl_create_jit_after_fork();
+    }
 
     // 2026-07-09: restart the sigchain re-assert thread in the forked CHILD, now that
     // postForkChild/setcon are done (child may be multi-threaded). This keeps ART's

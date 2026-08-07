@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <linux/input.h>
 
 #define TAP_CHANNEL "/data/local/tmp/noice_tap"
@@ -30,6 +31,19 @@ static void emit(const char* s) {
     fflush(stderr);
 }
 
+/* §563: stream DOWN/MOVE/UP instead of one synthetic gesture on lift. The bridge exposes
+ * "d x y" / "m x y" / "u x y" which it forwards verbatim via dispatchSingleTouchViaViewRoot, so
+ * the app sees a coherent moving pointer: press feedback appears immediately and RecyclerView /
+ * ScrollView can actually scroll. Opt-in (WL_TOUCH_STREAM=1) so the proven lift-only tap path
+ * stays the default. MOVEs are throttled -- the channel is one line per poll, so flooding it just
+ * loses samples. */
+static int g_stream = 0;
+static void emit_stream(char c, int x, int y) {
+    char b[64];
+    snprintf(b, sizeof(b), "%c %d %d\n", c, x, y);
+    emit(b);
+}
+
 int main(int argc, char** argv) {
     const char* dev = argc > 1 ? argv[1] : "/dev/input/event5";
     int fd = open(dev, O_RDONLY);
@@ -37,7 +51,10 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[touchfwd] forwarding %s -> %s\n", dev, TAP_CHANNEL);
     fflush(stderr);
 
+    { const char* e = getenv("WL_TOUCH_STREAM"); g_stream = (e && *e == '1'); }
+    if (g_stream) { fprintf(stderr, "[touchfwd] STREAMING mode (d/m/u)\n"); fflush(stderr); }
     int x = -1, y = -1, downX = -1, downY = -1, touching = 0, sawDown = 0;
+    int streamDown = 0, lastMx = -1, lastMy = -1;
     struct input_event ev;
     while (read(fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
         if (ev.type == EV_ABS) {
@@ -52,6 +69,20 @@ int main(int argc, char** argv) {
             else touching = 0;
         } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
             if (touching && sawDown && downX < 0) { downX = x; downY = y; }
+            if (g_stream) {
+                if (touching && !streamDown && x >= 0 && y >= 0) {
+                    emit_stream('d', x, y); streamDown = 1; lastMx = x; lastMy = y;
+                } else if (touching && streamDown) {
+                    int mdx = x - lastMx, mdy = y - lastMy;
+                    if (mdx < 0) mdx = -mdx;
+                    if (mdy < 0) mdy = -mdy;
+                    if (mdx + mdy >= 8) { emit_stream('m', x, y); lastMx = x; lastMy = y; }
+                } else if (!touching && streamDown) {
+                    emit_stream('u', x, y); streamDown = 0; sawDown = 0;
+                    downX = downY = -1;
+                }
+                continue;   /* streaming replaces the lift-only tap below */
+            }
             if (!touching && sawDown && x >= 0 && y >= 0) {
                 char buf[64];
                 int dx = x - downX, dy = y - downY;

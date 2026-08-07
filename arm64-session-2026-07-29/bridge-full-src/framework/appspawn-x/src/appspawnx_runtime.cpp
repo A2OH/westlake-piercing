@@ -278,6 +278,19 @@ int AppSpawnXRuntime::startVm() {
     }
 
     // 2026-05-01 G2.14n DIAGNOSTIC: disable JIT.
+    // §561: ART's IMPLICIT stack-overflow / null checks work by deliberately touching a guard
+    // page and fixing up the faulting PC inside a signal handler. On OHOS that PC edit does not
+    // survive sigreturn (the same defect that made implicit-null fatal under AOT/JIT --
+    // see startup-flaky-getapplicationinfo-fix-2026-06-29), so the moment the JIT starts running
+    // compiled frames the main thread throws a spurious
+    //     java.lang.StackOverflowError: stack size 8182KB
+    // at 8 MB, and it is unaffected by -Xss or the JIT threshold. Explicit checks cost a compare
+    // per frame but do not depend on signal delivery at all.
+    if (const char* v = getenv("APPSPAWNX_EXPLICIT_CHECKS"); v && strcmp(v, "1") == 0) {
+        options.push_back(makeOption("-Ximplicit-checks:none"));
+        options.push_back(makeOption("-Xexplicit-checks:all"));
+        LOGW("ART EXPLICIT checks forced (implicit stack/null checks OFF) via APPSPAWNX_EXPLICIT_CHECKS=1");
+    }
     if (const char* v = getenv("APPSPAWNX_NO_JIT"); v && strcmp(v, "1") == 0) {
         options.push_back(makeOption("-Xusejit:false"));
         LOGW("ART JIT DISABLED via APPSPAWNX_NO_JIT=1");

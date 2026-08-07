@@ -254,9 +254,34 @@ extern "C" char* strstr(const char* h, const char* n) {
         // libart runs ~100 of these predicates per interpreted invoke. It previously carried a
         // `p - h > budget` test on EVERY BYTE, which roughly doubled the cost of the one loop that
         // matters. The budget is only a degenerate-input heuristic, so it belongs outside.
-        while (*p != '\0' && *p != n0) {
-            ++p;
+        //
+        // §562: scan a WORD at a time instead of a byte at a time. This loop is ~30% of total CPU
+        // during real work, and the common case is the worst one: the needle's first byte is absent,
+        // so the whole ~30-byte class descriptor gets walked. SWAR turns that into ~4 loads.
+        // ⚠️Reads are 8-byte ALIGNED, so a load can never cross into an unmapped page — that is why
+        // the byte prologue below exists rather than just casting p.
+        {
+            constexpr uint64_t kOnes  = 0x0101010101010101ULL;
+            constexpr uint64_t kHighs = 0x8080808080808080ULL;
+            const uint64_t bcast = kOnes * (uint64_t)(unsigned char)n0;
+            while ((reinterpret_cast<uintptr_t>(p) & 7u) != 0) {
+                if (*p == '\0' || *p == n0) goto scan_done;
+                ++p;
+            }
+            for (;;) {
+                uint64_t v;
+                __builtin_memcpy(&v, p, sizeof v);           // aligned; no strict-aliasing UB
+                const uint64_t x = v ^ bcast;
+                const uint64_t hasZero = (v - kOnes) & ~v & kHighs;
+                const uint64_t hasN0   = (x - kOnes) & ~x & kHighs;
+                if ((hasZero | hasN0) != 0) break;           // this word holds NUL or the first byte
+                p += 8;
+            }
+            while (*p != '\0' && *p != n0) {                 // resolve within the found word
+                ++p;
+            }
         }
+    scan_done:
         if (*p == '\0') {
             return nullptr;
         }

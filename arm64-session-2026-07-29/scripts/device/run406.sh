@@ -60,7 +60,7 @@ while [ $i -lt 300 ]; do grep -q "Ready to accept" asx.err 2>/dev/null && break;
 pkill -f touchfwd 2>/dev/null
 if [ -x /data/local/tmp/touchfwd ]; then
   for ev in /dev/input/event5 /dev/input/event2; do
-    [ -e "$ev" ] && nohup /data/local/tmp/touchfwd "$ev" >>/data/local/tmp/touchfwd.log 2>&1 &
+    [ -e "$ev" ] && WL_TOUCH_STREAM=1 nohup /data/local/tmp/touchfwd "$ev" >>/data/local/tmp/touchfwd.log 2>&1 &
   done
   sleep 1
   echo "touchfwd started: $(ps -A | grep -c touchfwd) proc(s)"

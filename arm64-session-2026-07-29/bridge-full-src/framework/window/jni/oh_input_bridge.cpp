@@ -2526,6 +2526,34 @@ void OHInputBridge::startTapControlChannel() {
             // §408 window commands:
             //   echo w        > noice_tap    list every ViewRootImpl (index/class/size/shown)
             //   echo r2       > noice_tap    aim all later input at root #2 (r-1 = auto)
+            // §563: STREAMING touch. touchfwd only emits on finger LIFT, so nothing happens
+            // while the finger is down (no press feedback) and a drag is replayed as one synthetic
+            // swipe afterwards -- smooth scrolling is impossible by construction. MMI's own
+            // DOWN/MOVE/UP stream would fix it, and dispatchSingleTouchViaViewRoot already exists
+            // for exactly that, but OnInputEvent(PointerEvent) has NEVER fired on this board (the
+            // WMS-focus wall), so that path is dead code. Feed it from the control channel instead:
+            //     d <x> <y>   ACTION_DOWN   (also starts a new downTime)
+            //     m <x> <y>   ACTION_MOVE
+            //     u <x> <y>   ACTION_UP
+            // Opt-in via WL_TOUCH_STREAM=1 in touchfwd; the lift-only tap path is untouched.
+            if ((buf[0]=='d'||buf[0]=='m'||buf[0]=='u') && (buf[1]==' ')) {
+                float sx = 0.f, sy = 0.f;
+                if (sscanf(buf + 1, "%f %f", &sx, &sy) == 2) {
+                    static int64_t s_streamDownNs = 0;
+                    struct timespec ts_;
+                    clock_gettime(CLOCK_MONOTONIC, &ts_);
+                    const int64_t nowNs = (int64_t)ts_.tv_sec * 1000000000LL + ts_.tv_nsec;
+                    int32_t act;
+                    if (buf[0]=='d') { act = 0; s_streamDownNs = nowNs; }
+                    else if (buf[0]=='m') { act = 2; }
+                    else { act = 1; }
+                    if (s_streamDownNs == 0) s_streamDownNs = nowNs;
+                    OHInputBridge::getInstance().dispatchSingleTouchViaViewRoot(
+                        act, sx, sy, s_streamDownNs, nowNs);
+                }
+                FILE* wS = fopen(path, "w"); if (wS) fclose(wS);
+                continue;
+            }
             if (buf[0] == 'w' || buf[0] == 'W') {
                 FILE* ww = fopen(path, "w"); if (ww) fclose(ww);
                 JNIEnv* denv = nullptr; bool det = false;
