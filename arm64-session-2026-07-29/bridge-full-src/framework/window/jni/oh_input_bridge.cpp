@@ -435,6 +435,7 @@ int32_t OHInputBridge::dispatchKeyViaViewRoot(int32_t action, int32_t keyCode,
     // ViewRootImpl.enqueueInputEvent(InputEvent) is public and hops to the UI thread by itself.
     jobject vriMatch = nullptr, vriFallback = nullptr;
     jobject decorView = nullptr, fallbackView = nullptr;
+    int chosenRootK = -1, fallbackIdxK = -1;   // §552: report WHICH window got the key
     for (jint i = 0; i < n; ++i) {
         jobject vri = env->CallObjectMethod(roots, getM, i);
         if (!vri) continue;
@@ -454,31 +455,50 @@ int32_t OHInputBridge::dispatchKeyViaViewRoot(int32_t action, int32_t keyCode,
                 }
             }
             if (focused) {
-                if (recv) receiver = env->NewLocalRef(recv);  // keep
-                vriMatch = env->NewGlobalRef(vri);
+                // WESTLAKE §552: keep the LAST match, not the first — the same rule the TOUCH path
+                // already follows (§460). mRoots APPENDS, so a dialog is always a later entry than
+                // the Activity beneath it, and the Activity's DecorView still reports isShown()==true.
+                // Breaking on the first match sent every KEY to the Activity window, which is why
+                // typing into a dialog's EditText did nothing and logged
+                //     dispatchKeyViaViewRoot: ... DecorView.dispatchKeyEvent handled=0
+                // while the touch that focused that very field had correctly gone to root[1].
+                if (receiver)  env->DeleteLocalRef(receiver);
+                if (vriMatch)  env->DeleteGlobalRef(vriMatch);
+                if (decorView) env->DeleteGlobalRef(decorView);
+                receiver  = recv ? env->NewLocalRef(recv) : nullptr;
+                vriMatch  = env->NewGlobalRef(vri);
                 decorView = env->NewGlobalRef(view);
+                chosenRootK = (int)i;
             } else if (!vriFallback) {
                 if (recv && !fallbackRecv) fallbackRecv = env->NewLocalRef(recv);
                 vriFallback = env->NewGlobalRef(vri);
                 fallbackView = env->NewGlobalRef(view);
+                fallbackIdxK = (int)i;
             }
         }
         if (recv) env->DeleteLocalRef(recv);
         if (view) env->DeleteLocalRef(view);
         env->DeleteLocalRef(vri);
-        if (vriMatch) break;
+        // §552: no early break — we want the LAST matching root (topmost window).
     }
     if (!receiver) receiver = fallbackRecv;   // no focused window -> best effort
-    if (!vriMatch) vriMatch = vriFallback;
+    if (!vriMatch) { vriMatch = vriFallback; chosenRootK = fallbackIdxK; }
     if (!decorView) decorView = fallbackView;
     if (!receiver && !vriMatch && !decorView) { env->DeleteLocalRef(keyEvent); return fail("no ViewRootImpl receiver"); }
+    // §552: name the window, for the same reason §460 added it to the touch path — "handled=0" from
+    // the wrong root reads exactly like a broken widget.
+    LOGI("dispatchKeyViaViewRoot: chose root[%d] of %d (g_rootIndex=%d)",
+         chosenRootK, (int)n, g_rootIndex.load());
 
     // --- 3a. preferred: DecorView.dispatchKeyEvent (§405b) ---
     // Same reasoning as the touch path: enqueueInputEvent runs the event through ViewRootImpl's
     // input stages, and on this board those reach services that do not exist (autofill ->
     // UserManager) and kill the process.  DecorView.dispatchKeyEvent goes straight to the Window
     // callback (the Activity), which is what BACK actually needs.
-    static const bool wl_keyEnqueue = (getenv("WL_TOUCH_ENQUEUE") != nullptr);
+    // §556: a KEY-ONLY switch. WL_TOUCH_ENQUEUE flips touch as well, and touch currently works
+    // (§554), so testing the ViewRootImpl route for keys must not disturb it.
+    static const bool wl_keyEnqueue = (getenv("WL_TOUCH_ENQUEUE") != nullptr) ||
+                                      (getenv("WL_KEY_ENQUEUE") != nullptr);
     if (decorView != nullptr && !wl_keyEnqueue) {
         jmethodID dkeM = env->GetMethodID(viewCls, "dispatchKeyEvent",   // §408c
             "(Landroid/view/KeyEvent;)Z");
@@ -593,24 +613,53 @@ int32_t OHInputBridge::dispatchCharactersViaViewRoot(const char* utf8) {
                         "Landroid/view/ViewRootImpl$WindowInputEventReceiver;");
     jclass viewCls = env->FindClass("android/view/View");
     jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
+    // WESTLAKE §552: THIS is the function that types (the per-key `tapKey` path below it is only a
+    // fallback that never runs, because this one reports success). It used to pick the FIRST root
+    // whose view returns hasWindowFocus(), and otherwise the FIRST root of all — which on this port
+    // is always the Activity, never the dialog stacked on top of it. So typing into a dialog's
+    // EditText dispatched to the wrong window and logged a cheerful "-> ViewRootImpl OK" while
+    // nothing changed. Same defect the TOUCH path already fixed in §460, and the same cure:
+    // honour an explicit g_rootIndex, accept isShown() as well as focus, and keep the LAST match
+    // (mRoots APPENDS, so the topmost window is the last entry).
     jobject receiver = nullptr, fallbackRecv = nullptr;
+    int chosenRootC = -1, fallbackIdxC = -1;
     for (jint i = 0; i < n; ++i) {
         jobject vri = env->CallObjectMethod(roots, getM, i);
         if (!vri) continue;
         jobject recv = env->GetObjectField(vri, recvF);
         jobject view = env->GetObjectField(vri, mViewF);
         if (recv && view) {
-            jboolean focused = env->CallBooleanMethod(view, hasFocusM);
-            if (focused) receiver = env->NewLocalRef(recv);
-            else if (!fallbackRecv) fallbackRecv = env->NewLocalRef(recv);
+            const int wantC = g_rootIndex.load();
+            jboolean focused;
+            if (wantC >= 0) {
+                focused = (i == wantC) ? JNI_TRUE : JNI_FALSE;
+            } else {
+                focused = env->CallBooleanMethod(view, hasFocusM);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); focused = JNI_FALSE; }
+                if (!focused) {
+                    jmethodID shownM = env->GetMethodID(viewCls, "isShown", "()Z");
+                    if (shownM) focused = env->CallBooleanMethod(view, shownM);
+                    if (env->ExceptionCheck()) { env->ExceptionClear(); focused = JNI_FALSE; }
+                }
+            }
+            if (focused) {
+                if (receiver) env->DeleteLocalRef(receiver);
+                receiver = env->NewLocalRef(recv);
+                chosenRootC = (int)i;
+            } else if (!fallbackRecv) {
+                fallbackRecv = env->NewLocalRef(recv);
+                fallbackIdxC = (int)i;
+            }
         }
         if (recv) env->DeleteLocalRef(recv);
         if (view) env->DeleteLocalRef(view);
         env->DeleteLocalRef(vri);
-        if (receiver) break;
+        // §552: no early break — keep the LAST match.
     }
-    if (!receiver) receiver = fallbackRecv;
+    if (!receiver) { receiver = fallbackRecv; chosenRootC = fallbackIdxC; }
     if (!receiver) { env->DeleteLocalRef(keyEvent); return fail("no ViewRootImpl receiver"); }
+    LOGI("dispatchCharactersViaViewRoot: chose root[%d] of %d (g_rootIndex=%d)",
+         chosenRootC, (int)n, g_rootIndex.load());
 
     jclass iebCls = env->FindClass("adapter/window/InputEventBridge");
     jmethodID domt = env->GetStaticMethodID(iebCls, "dispatchOnMainThread",
@@ -825,7 +874,10 @@ struct WlViewDumpCtx {
     jclass viewCls, vgCls, tvCls, clsCls, resCls;
     jmethodID getName, getId, getVis, isClickable, getW, getH, getLeft, getTop,
               getScrollX, getScrollY, getChildCount, getChildAt, getText, toString,
-              getResources, getResourceEntryName, isEnabled;
+              getResources, getResourceEntryName, isEnabled,
+              // §555: focus diagnostics — a tap that lands but never focuses looks identical to a
+              // tap that missed, and that ambiguity is what made the text-input bug unreadable.
+              isFocused, isFocusableInTouchMode, isInTouchMode;
 };
 static void wl_dump_view(JNIEnv* env, WlViewDumpCtx& c, jobject v, int px, int py, int depth,
                          jobject resources) {
@@ -837,6 +889,9 @@ static void wl_dump_view(JNIEnv* env, WlViewDumpCtx& c, jobject v, int px, int p
     const jint vis  = env->CallIntMethod(v, c.getVis);
     const jboolean clk = env->CallBooleanMethod(v, c.isClickable);
     const jboolean en  = env->CallBooleanMethod(v, c.isEnabled);
+    const jboolean foc = c.isFocused ? env->CallBooleanMethod(v, c.isFocused) : JNI_FALSE;
+    const jboolean ftm = c.isFocusableInTouchMode ? env->CallBooleanMethod(v, c.isFocusableInTouchMode) : JNI_FALSE;
+    const jboolean itm = c.isInTouchMode ? env->CallBooleanMethod(v, c.isInTouchMode) : JNI_FALSE;
     if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
     const int x = px + left;
     const int y = py + top;
@@ -897,9 +952,9 @@ static void wl_dump_view(JNIEnv* env, WlViewDumpCtx& c, jobject v, int px, int p
             }
             if (sc) env->DeleteLocalRef(sc);
         }
-        LOGI("VT %s%s id=%s rect=[%d,%d %dx%d] c=%d en=%d %s%s%s%s",
+        LOGI("VT %s%s id=%s rect=[%d,%d %dx%d] c=%d en=%d f=%d ftm=%d itm=%d %s%s%s%s",
              indent, shortName ? shortName : "?", idbuf[0] ? idbuf : "-",
-             x, y, (int)w, (int)h, (int)clk, (int)en,
+             x, y, (int)w, (int)h, (int)clk, (int)en, (int)foc, (int)ftm, (int)itm,
              txt[0] ? "\"" : "", txt, txt[0] ? "\"" : "", extra);
     }
     if (jn && cn) env->ReleaseStringUTFChars(jn, cn);
@@ -950,6 +1005,10 @@ void wl_dump_view_tree(JNIEnv* env, int rootIdx) {
     c.getVis      = env->GetMethodID(c.viewCls, "getVisibility", "()I");
     c.isClickable = env->GetMethodID(c.viewCls, "isClickable", "()Z");
     c.isEnabled   = env->GetMethodID(c.viewCls, "isEnabled", "()Z");
+    c.isFocused   = env->GetMethodID(c.viewCls, "isFocused", "()Z");
+    c.isFocusableInTouchMode = env->GetMethodID(c.viewCls, "isFocusableInTouchMode", "()Z");
+    c.isInTouchMode = env->GetMethodID(c.viewCls, "isInTouchMode", "()Z");
+    if (env->ExceptionCheck()) env->ExceptionClear();   // §555: optional, never fatal
     c.getW        = env->GetMethodID(c.viewCls, "getWidth", "()I");
     c.getH        = env->GetMethodID(c.viewCls, "getHeight", "()I");
     c.getLeft     = env->GetMethodID(c.viewCls, "getLeft", "()I");
@@ -2656,8 +2715,15 @@ void OHInputBridge::startTextControlChannel() {
             // KeyEvent (KeyCharacterMap-independent). Falls back to per-key
             // dispatch only if the string path reports failure.
             LOGI("textControlChannel: type \"%s\" (%zu chars)", buf, n);
-            if (dispatchCharactersViaViewRoot(buf) != 0) {
-                LOGE("textControlChannel: string path failed, per-key fallback");
+            // §556: PER-KEY IS NOW THE DEFAULT. The string path builds one ACTION_MULTIPLE
+            // KeyEvent carrying the characters — deprecated in API 29, and this runtime's
+            // TextView/Editor never commits it. It nonetheless returned 0 and logged
+            // "-> ViewRootImpl OK", so the per-key fallback never ran and typing silently did
+            // nothing into a focused, in-touch-mode EditText (f=1 ftm=1 itm=1 confirmed).
+            // Set WL_TEXT_STRING=1 to restore the old ACTION_MULTIPLE behaviour.
+            static const bool wl_textString = (getenv("WL_TEXT_STRING") != nullptr);
+            if (!wl_textString || dispatchCharactersViaViewRoot(buf) != 0) {
+                if (wl_textString) LOGE("textControlChannel: string path failed, per-key fallback");
                 for (size_t i = 0; i < n; ++i) {
                     int32_t code; bool shift;
                     if (!charToKey(buf[i], code, shift)) continue;

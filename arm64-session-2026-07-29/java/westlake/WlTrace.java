@@ -78,4 +78,16 @@ public final class WlTrace {
 
     public static void s19() { hit("LocalSoundPlayer.<init> constructed"); }
 
+    // §548 — which SoundPlayerManager entry point actually runs on PAUSE vs on RESUME.
+    // Resume is broken (0/8 taps; stream stays STOPPED/PAUSED) and throws NOTHING, so the question
+    // is simply "how far does the tap get?". These label every candidate so the two log windows can
+    // be diffed. Names are the obfuscated ones — the class is not obfuscated, its methods are.
+    public static void r0() { hit("SPM.a(Z) ENTER"); }
+    public static void r1() { hit("SPM.b() ENTER"); }
+    public static void r2() { hit("SPM.e(Z) ENTER"); }
+    public static void r3() { hit("SPM.h() ENTER"); }
+    public static void r4() { hit("SPM.i() ENTER"); }
+    public static void r5() { hit("SPM.l(Z) ENTER"); }
+    public static void r6() { hit("SPM.f(SortedMap) ENTER"); }
+    public static void r7() { hit("SoundPlayer.k() ENTER"); }
 }

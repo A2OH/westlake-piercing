@@ -21,6 +21,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <atomic>
 #include <android/log.h>
 
 #define ATLOG(...) __android_log_print(ANDROID_LOG_INFO, "OH_ATShim", __VA_ARGS__)
@@ -102,6 +103,10 @@ struct ATShim {
     // OH renderer pulled, including the silence we hand it on underrun, so it advances even when the
     // app has written nothing — which is NOT what AudioTrack.getPlaybackHeadPosition() means.
     int64_t framesReal=0;
+    // §520: AudioTrack.getPlaybackHeadPosition() is documented to RESET on flush() and stop().
+    // Without that, a reused or seeked track reports a position from the previous playback epoch and
+    // ExoPlayer's position tracking silently reads from the wrong timeline.
+    int64_t framesUnderrun=0;   // real underrun accounting — we already detect give < len
 };
 
 static jfieldID g_fNative = nullptr;
@@ -118,7 +123,10 @@ static int32_t onWriteData(OH_AudioRenderer*, void* user, void* buffer, int32_t 
     int32_t give = (int32_t)((s->count < (size_t)len) ? s->count : (size_t)len);
     for (int32_t i=0;i<give;i++){ out[i]=s->ring[s->head]; s->head=(s->head+1)%s->cap; }
     s->count -= give;
-    if (give < len) memset(out+give, 0, len-give);     // silence on underrun
+    if (give < len) {
+        memset(out+give, 0, len-give);                  // silence on underrun
+        s->framesUnderrun += (len - give) / (s->bytesPerFrame>0?s->bytesPerFrame:4);   // §520
+    }
     int bpf = (s->bytesPerFrame>0?s->bytesPerFrame:4);
     s->framesRendered += len / bpf;
     s->framesReal     += give / bpf;   // §514: only real PCM counts toward playback position
@@ -180,13 +188,41 @@ static jint nSetup(JNIEnv* env, jobject thiz, jobject /*weak*/, jobject /*attrs*
 }
 
 static void nStart(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(s&&s->renderer&&!s->started){ p_Start(s->renderer); s->started=true; ATLOG("start"); } }
-static void nStop(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(s&&s->renderer){ { std::lock_guard<std::mutex> lk(s->mu); s->stopping=true; } s->spaceCv.notify_all(); if(p_Stop)p_Stop(s->renderer); s->started=false; } }
-static void nPause(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(s&&s->renderer&&p_Pause) p_Pause(s->renderer); }
-static void nFlush(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(s){ std::lock_guard<std::mutex> lk(s->mu); s->head=s->tail=s->count=0; if(p_Flush&&s->renderer)p_Flush(s->renderer);} }
+static void resetPlaybackEpochLocked(ATShim* s) {   // §520: caller holds s->mu
+    s->framesReal = 0; s->framesRendered = 0;
+    s->head = s->tail = s->count = 0;
+}
+static void nStop(JNIEnv* env, jobject thiz){
+    ATShim* s=getShim(env,thiz); if(!s) return;
+    if(p_Stop&&s->renderer) p_Stop(s->renderer);
+    s->started=false;   // §549: same latch as nPause — a stopped renderer must be startable again.
+    { std::lock_guard<std::mutex> l(s->mu); resetPlaybackEpochLocked(s); }   // §520
+    s->spaceCv.notify_all();
+}
+// §549: clearing `started` here is the whole fix for "resume from pause never works".
+// `nStart` is guarded by `!s->started` (so a redundant AudioTrack.play() cannot double-start the OH
+// renderer), but nothing ever cleared the flag again — it was a one-way latch. So the SECOND
+// AudioTrack.play(), i.e. every resume, saw started==true and returned WITHOUT calling
+// OH_AudioRenderer_Start. Silently: no exception, no log, and the OH stream just sat at
+// STOPPED/PAUSED forever while the app-side state machine believed it had resumed.
+// ★Nothing above this layer was at fault — traces proved SoundPlayerManager.i() -> h() ->
+// SoundPlayer.k() -> MediaPlayerImpl.L() (prepare + setPlayWhenReady) all ran on every resume, and
+// AudioTrack.startImpl() reaches native_start() because PlayerBase.baseStart() is already a no-op
+// on this port. The break was entirely inside this function's missing state reset.
+static void nPause(JNIEnv* env, jobject thiz){
+    ATShim* s=getShim(env,thiz);
+    if(s&&s->renderer&&p_Pause){ p_Pause(s->renderer); s->started=false; ATLOG("pause"); }
+}
+static void nFlush(JNIEnv* env, jobject thiz){
+    ATShim* s=getShim(env,thiz); if(!s) return;
+    if(p_Flush&&s->renderer) p_Flush(s->renderer);
+    { std::lock_guard<std::mutex> l(s->mu); resetPlaybackEpochLocked(s); }   // §520
+    s->spaceCv.notify_all();
+}
 static void nRelease(JNIEnv* env, jobject thiz){ ATShim* s=getShim(env,thiz); if(s){ { std::lock_guard<std::mutex> lk(s->mu); s->stopping=true; } s->spaceCv.notify_all(); if(p_Release&&s->renderer)p_Release(s->renderer); if(p_Destroy&&s->builder)p_Destroy(s->builder); env->SetLongField(thiz,g_fNative,0); delete s; ATLOG("release"); } }
 static void nFinalize(JNIEnv* env, jobject thiz){ nRelease(env,thiz); }
 
-static long g_writeCalls = 0;
+static std::atomic<long> g_writeCalls{0};
 static void logWrite(jint size, jint rc, const char* via) {
     long n = ++g_writeCalls;
     if (n <= 5 || (n % 200) == 0)
@@ -235,7 +271,7 @@ static jint nWriteFloat(JNIEnv* env, jobject thiz, jfloatArray data, jint off, j
     int w=pushPcm(s,(const uint8_t*)tmp.data(), size*2, blocking);
     return w/2;
 }
-static long g_posCalls = 0;
+static std::atomic<long> g_posCalls{0};
 static jint nGetPos(JNIEnv* env, jobject thiz){
     ATShim* s=getShim(env,thiz); if(!s) return 0;
     // §514: AudioTrack.getPlaybackHeadPosition() is "frames played from what the app wrote". Using
@@ -295,14 +331,24 @@ static void nDisableDeviceCb(JNIEnv*, jobject) { }
 static jint nRoutedDeviceId(JNIEnv*, jobject) { return 0; }   // 0 = unknown/default device
 static jint nPortId(JNIEnv*, jobject) { return 0; }
 static jint nGetFlags(JNIEnv*, jobject) { return 0; }         // no AUDIO_OUTPUT_FLAG_* apply
-static jint nUnderrunCount(JNIEnv*, jobject) { return 0; }
+// §520: we DETECT underruns (give < len), so reporting 0 is a fabrication, not an honest
+// "unavailable". Callers use this diagnostically and to adapt buffering.
+static jint nUnderrunCount(JNIEnv* env, jobject thiz) {
+    ATShim* s = getShim(env, thiz); if (!s) return 0;
+    std::lock_guard<std::mutex> l(s->mu);
+    return (jint)s->framesUnderrun;
+}
 static jint nGetLatency(JNIEnv*, jobject) { return 0; }
 static void nSetLogSessionId(JNIEnv*, jobject, jstring) { }
 
-// §506b: the rest of what ExoPlayer can actually reach, taken from a static scan of the app dex
-// (tools/FindClassRefs.java on Landroid/media/AudioTrack;) rather than from another round of
-// discover-one-crash-at-a-time. That scan is also why getBufferSizeInFrames is absent here: the app
-// never references it, so binding it would be speculation.
+// §506b/§522: taken from a static scan of the app dex (tools/FindClassRefs.java on
+// Landroid/media/AudioTrack;) rather than another round of discover-one-crash-at-a-time. The scan is
+// also why getBufferSizeInFrames is absent: the app never references it, so binding it would be
+// speculation.
+// ★attachAuxEffect / setAuxEffectSendLevel / setOutputDevice / set_delay_padding /
+// is_direct_output_supported were previously DEFINED here but never registered — dead code that
+// still raises UnsatisfiedLinkError if the app ever reaches it, i.e. the worst of both. Removed.
+// If evidence (JNIMISS) names one, add the implementation and the table row together.
 //
 // Each of these returns the honest "not available / not supported" answer rather than a plausible
 // lie, because ExoPlayer degrades gracefully on all of them:
@@ -314,14 +360,9 @@ static void nSetLogSessionId(JNIEnv*, jobject, jstring) { }
 //   preferred device -> false; we have no routing to honour and saying otherwise would be a lie.
 // ⚠️AudioTimestampPoller calls getTimestamp with NO catch, so leaving it unbound is fatal, while
 // answering "unavailable" is a state real devices report routinely.
-static jint nGetTimestamp(JNIEnv*, jobject, jlongArray) { return -1; }         // != SUCCESS
-static jint nAttachAuxEffect(JNIEnv*, jobject, jint) { return 0; }             // SUCCESS, no-op
-static jint nSetAuxSendLevel(JNIEnv*, jobject, jfloat) { return 0; }
-static jboolean nSetOutputDevice(JNIEnv*, jobject, jint) { return JNI_FALSE; }
-static void nSetDelayPadding(JNIEnv*, jobject, jint, jint) { }
-static jboolean nIsDirectSupported(JNIEnv*, jclass, jint, jint, jint, jint, jint, jint, jint) {
-    return JNI_FALSE;
-}
+// §522: ERROR_INVALID_OPERATION (-3) is the framework's own "not available" status, which callers
+// already understand — an arbitrary -1 is merely "not SUCCESS" by accident.
+static jint nGetTimestamp(JNIEnv*, jobject, jlongArray) { return -3; }   // ERROR_INVALID_OPERATION
 
 int register_AudioTrack_shim(JNIEnv* env) {
     if (!loadOhAudio()) { ATERR("OH audio unavailable; AudioTrack shim NOT registered"); return -1; }
@@ -329,34 +370,38 @@ int register_AudioTrack_shim(JNIEnv* env) {
     if (!c) { if(env->ExceptionCheck())env->ExceptionClear(); ATERR("AudioTrack class not found"); return -1; }
     g_fNative = env->GetFieldID(c, "mNativeTrackInJavaObj", "J");
     if (!g_fNative){ if(env->ExceptionCheck())env->ExceptionClear(); ATERR("mNativeTrackInJavaObj field not found"); return -1; }
-    JNINativeMethod m[] = {
-        {"native_setup", "(Ljava/lang/Object;Ljava/lang/Object;[IIIIII[ILandroid/os/Parcel;JZILjava/lang/Object;Ljava/lang/String;)I", (void*)nSetup},
-        {"native_start", "()V", (void*)nStart},
-        {"native_stop", "()V", (void*)nStop},
-        {"native_pause", "()V", (void*)nPause},
-        {"native_flush", "()V", (void*)nFlush},
-        {"native_release", "()V", (void*)nRelease},
-        {"native_finalize", "()V", (void*)nFinalize},
-        {"native_write_byte", "([BIIIZ)I", (void*)nWriteByte},
-        {"native_write_short", "([SIIIZ)I", (void*)nWriteShort},
-        {"native_write_float", "([FIIIZ)I", (void*)nWriteFloat},
-        {"native_write_native_bytes", "(Ljava/nio/ByteBuffer;IIIZ)I", (void*)nWriteNative},
-        {"native_get_position", "()I", (void*)nGetPos},
-        {"native_setVolume", "(FF)V", (void*)nSetVolume},
-        {"native_get_min_buff_size", "(III)I", (void*)nMinBuf},
+    // §518: required vs optional is an explicit per-entry flag, not a positional boundary.
+    // It used to be `kFirstOptional = 14`, which silently mis-classifies every entry below it the
+    // moment someone inserts a row — exactly the kind of latent trap this shim exists to remove.
+    struct ATMethod { JNINativeMethod m; bool required; };
+    const ATMethod methods[] = {
+        { {"native_setup", "(Ljava/lang/Object;Ljava/lang/Object;[IIIIII[ILandroid/os/Parcel;JZILjava/lang/Object;Ljava/lang/String;)I", (void*)nSetup}, true },
+        { {"native_start", "()V", (void*)nStart}, true },
+        { {"native_stop", "()V", (void*)nStop}, true },
+        { {"native_pause", "()V", (void*)nPause}, true },
+        { {"native_flush", "()V", (void*)nFlush}, true },
+        { {"native_release", "()V", (void*)nRelease}, true },
+        { {"native_finalize", "()V", (void*)nFinalize}, true },
+        { {"native_write_byte", "([BIIIZ)I", (void*)nWriteByte}, true },
+        { {"native_write_short", "([SIIIZ)I", (void*)nWriteShort}, true },
+        { {"native_write_float", "([FIIIZ)I", (void*)nWriteFloat}, true },
+        { {"native_write_native_bytes", "(Ljava/nio/ByteBuffer;IIIZ)I", (void*)nWriteNative}, true },
+        { {"native_get_position", "()I", (void*)nGetPos}, true },
+        { {"native_setVolume", "(FF)V", (void*)nSetVolume}, true },
+        { {"native_get_min_buff_size", "(III)I", (void*)nMinBuf}, true },
         // §505/§506: no-ops, but they MUST be bound — see nSetPlayerIId above. Per-method
         // registration below means any that this framework.jar does not declare are skipped
         // harmlessly rather than taking the whole table down with them.
-        {"native_setPlayerIId", "(I)V", (void*)nSetPlayerIId},
-        {"native_enableDeviceCallback", "()V", (void*)nEnableDeviceCb},
-        {"native_disableDeviceCallback", "()V", (void*)nDisableDeviceCb},
-        {"native_getRoutedDeviceId", "()I", (void*)nRoutedDeviceId},
-        {"native_getPortId", "()I", (void*)nPortId},
-        {"native_get_flags", "()I", (void*)nGetFlags},
-        {"native_get_underrun_count", "()I", (void*)nUnderrunCount},
-        {"native_get_latency", "()I", (void*)nGetLatency},
-        {"native_setLogSessionId", "(Ljava/lang/String;)V", (void*)nSetLogSessionId},
-        {"native_get_timestamp", "([J)I", (void*)nGetTimestamp},
+        { {"native_setPlayerIId", "(I)V", (void*)nSetPlayerIId}, false },
+        { {"native_enableDeviceCallback", "()V", (void*)nEnableDeviceCb}, false },
+        { {"native_disableDeviceCallback", "()V", (void*)nDisableDeviceCb}, false },
+        { {"native_getRoutedDeviceId", "()I", (void*)nRoutedDeviceId}, false },
+        { {"native_getPortId", "()I", (void*)nPortId}, false },
+        { {"native_get_flags", "()I", (void*)nGetFlags}, false },
+        { {"native_get_underrun_count", "()I", (void*)nUnderrunCount}, false },
+        { {"native_get_latency", "()I", (void*)nGetLatency}, false },
+        { {"native_setLogSessionId", "(Ljava/lang/String;)V", (void*)nSetLogSessionId}, false },
+        { {"native_get_timestamp", "([J)I", (void*)nGetTimestamp}, false },
         // ⛔The five other natives the dex scan turned up — attachAuxEffect,
         // setAuxEffectSendLevel, setOutputDevice, set_delay_padding and
         // is_direct_output_supported — are NOT bound, and binding them is not a free win.
@@ -366,20 +411,17 @@ int register_AudioTrack_shim(JNIEnv* env) {
         // evidence. Bisecting cost a full board cycle, so: bind what the runtime has actually
         // asked for, one at a time, and let JNIMISS name the next one.
     };
-    int n = sizeof(m)/sizeof(m[0]);
-    // Entries from kFirstOptional on are the §505/§506 no-ops. Whether a given framework.jar
-    // declares each of them varies by API level, and a method this AudioTrack.java does not declare
-    // is not an error — so a miss there must not fail the shim and hide a real core-method failure.
-    const int kFirstOptional = 14;
-    int ok=0, reqFail=0;
-    for (int i=0;i<n;i++){
-        if (env->RegisterNatives(c,&m[i],1)==0) { ok++; continue; }
+    const int n = (int)(sizeof(methods)/sizeof(methods[0]));
+    int ok = 0, reqFail = 0;
+    for (int i = 0; i < n; i++) {
+        JNINativeMethod one = methods[i].m;
+        if (env->RegisterNatives(c, &one, 1) == 0) { ok++; continue; }
         if (env->ExceptionCheck()) env->ExceptionClear();
-        if (i < kFirstOptional) { reqFail++; ATERR("reg fail (required): %s", m[i].name); }
-        else                    { ATLOG("not declared, skipped: %s", m[i].name); }
+        if (methods[i].required) { reqFail++; ATERR("reg fail (required): %s", one.name); }
+        else                     { ATLOG("not declared, skipped: %s", one.name); }
     }
     ATLOG("AudioTrack shim registered %d/%d (required failures=%d)", ok, n, reqFail);
-    return reqFail==0?0:-1;
+    return reqFail == 0 ? 0 : -1;
 }
 
 } // extern "C"

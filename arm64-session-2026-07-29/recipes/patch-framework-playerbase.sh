@@ -30,7 +30,10 @@
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; . "$HERE/env.sh"
 board_online || exit 1
-OUT="${OUT:-/tmp/fw-playerbase}"; rm -rf "$OUT"; mkdir -p "$OUT/x"
+OUT="${OUT:-/tmp/fw-playerbase}"
+# §523: refuse to rm -rf a caller-supplied path that is not clearly ours.
+case "$OUT" in /tmp/*|"${TMPDIR:-/tmp}"/*) ;; *) echo "FATAL: refusing to clear OUT=$OUT"; exit 1;; esac
+rm -rf "$OUT"; mkdir -p "$OUT/x"
 recv "$ASX/fw/framework.jar" "$OUT/orig.jar" || exit 1
 ( cd "$OUT/x" && unzip -o -q ../orig.jar 'classes*.dex' )
 
@@ -79,7 +82,9 @@ PY
 # ★zipalign -f -p 4 is mandatory after any python repack — skipping it has previously corrupted
 # resource loading badly enough that every glyph rendered wrong.
 "$ZIPALIGN" -f -p 4 "$OUT/framework.jar" "$OUT/framework-aligned.jar"
-"$HDC" shell "cp $ASX/fw/framework.jar $ASX/fw/framework.jar.bak-pre508" >/dev/null 2>&1
+# §523: never clobber an existing rollback point. A second run used to overwrite the clean backup
+# with the already-patched jar, destroying the only way back.
+"$HDC" shell "[ -e $ASX/fw/framework.jar.bak-pre508 ] || cp $ASX/fw/framework.jar $ASX/fw/framework.jar.bak-pre508" >/dev/null 2>&1
 push "$OUT/framework-aligned.jar" "$ASX/fw/framework.jar" || exit 1
 echo "§508 deployed. Rollback: cp $ASX/fw/framework.jar.bak-pre508 $ASX/fw/framework.jar"
 echo "★ boot image staleness: check the vdex mtime vs the jar before trusting this took effect."

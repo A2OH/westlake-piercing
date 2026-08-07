@@ -1343,14 +1343,19 @@ static void wl_tls_throw_io(JNIEnv* env, const char* what, int err) {
 }
 
 // Drive a would-block SSL op. Returns true to retry, false if it really failed/timed out.
-static bool wl_tls_wait(int fd, int sslErr, int timeoutMs) {
-    if (sslErr != 2 /*WANT_READ*/ && sslErr != 3 /*WANT_WRITE*/) return false;
+// §521: tri-state. Collapsing "deadline expired" and "poll() failed" into one boolean made both
+// surface as SocketTimeoutException, which misreports a broken transport as a slow one.
+enum WlWait { WL_WAIT_READY = 0, WL_WAIT_TIMEOUT = 1, WL_WAIT_ERROR = 2 };
+static WlWait wl_tls_wait(int fd, int sslErr, int timeoutMs) {
+    if (sslErr != 2 /*WANT_READ*/ && sslErr != 3 /*WANT_WRITE*/) return WL_WAIT_ERROR;
     struct pollfd p;
     p.fd = fd;
     p.events = (sslErr == 2) ? POLLIN : POLLOUT;
     p.revents = 0;
     const int r = poll(&p, 1, timeoutMs);
-    return r > 0;
+    if (r > 0)  return WL_WAIT_READY;
+    if (r == 0) return WL_WAIT_TIMEOUT;
+    return WL_WAIT_ERROR;
 }
 
 // §447: dump the first few HTTP bytes each way so we can see the actual request/response.
@@ -1407,7 +1412,7 @@ static jlong WL_TLS_handshake(JNIEnv* env, jclass, jint fd, jstring jhost, jint 
         rc = g_tls.SSL_connect(ssl);
         if (rc == 1) break;
         const int e = g_tls.SSL_get_error(ssl, rc);
-        if (!wl_tls_wait((int)fd, e, deadline)) {
+        if (wl_tls_wait((int)fd, e, deadline) != WL_WAIT_READY) {
             fprintf(stderr, "[WESTLAKE-441] handshake FAILED host=%s rc=%d ssl_err=%d errno=%s\n",
                     host ? host : "?", rc, e, strerror(errno));
             fflush(stderr);
@@ -1456,16 +1461,20 @@ static jint WL_TLS_read(JNIEnv* env, jclass, jlong handle, jint fd, jbyteArray b
             free(tmp); return -1;
         }
         if (e == 2 /*WANT_READ*/ || e == 3 /*WANT_WRITE*/) {
-            if (!wl_tls_wait((int)fd, e, deadline)) {
+            const WlWait w = wl_tls_wait((int)fd, e, deadline);
+            if (w != WL_WAIT_READY) {
                 // §517: was `return -1`, which Java reports to the caller as END-OF-STREAM. A
                 // timeout mid-body then looks like a clean EOF: OkHttp raises "unexpected end of
                 // stream" and abandons the partially written cache entry. That is exactly how a
                 // 1,392,045-byte CDN body ended up frozen as a 1,056,459-byte .tmp, stalling
                 // playback after one segment. Report it as what it is.
-                wl_tls_log_io("read", "poll timeout/error", n, e, fd);
+                wl_tls_log_io("read", (w == WL_WAIT_TIMEOUT) ? "poll timeout" : "poll error", n, e, fd);
                 free(tmp);
-                wl_tls_throw_named(env, "java/net/SocketTimeoutException",
-                                   "WestlakeTLS: read timed out");
+                wl_tls_throw_named(env,
+                    (w == WL_WAIT_TIMEOUT) ? "java/net/SocketTimeoutException"
+                                           : "javax/net/ssl/SSLException",
+                    (w == WL_WAIT_TIMEOUT) ? "WestlakeTLS: read timed out"
+                                           : "WestlakeTLS: poll failed during read");
                 return -1;
             }
             continue;
@@ -1474,22 +1483,30 @@ static jint WL_TLS_read(JNIEnv* env, jclass, jlong handle, jint fd, jbyteArray b
         // is what produced OkHttp's "EOFException: \n not found: limit=0" on a healthy connection.
         if (e == 5 /*SSL_ERROR_SYSCALL*/ && n < 0 &&
             (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-            if (!wl_tls_wait((int)fd, 2 /*poll readable*/, deadline)) {
+            const WlWait w2 = wl_tls_wait((int)fd, 2 /*poll readable*/, deadline);
+            if (w2 != WL_WAIT_READY) {
                 wl_tls_log_io("read", "poll after EAGAIN failed", n, e, fd);
                 free(tmp);
-                wl_tls_throw_named(env, "java/net/SocketTimeoutException",
-                                   "WestlakeTLS: read timed out after EAGAIN");
+                wl_tls_throw_named(env,
+                    (w2 == WL_WAIT_TIMEOUT) ? "java/net/SocketTimeoutException"
+                                            : "javax/net/ssl/SSLException",
+                    "WestlakeTLS: read failed after EAGAIN");
                 return -1;
             }
             continue;
         }
-        // §517: SSL_ERROR_SYSCALL with n==0 and no errno is an unclean transport shutdown — the
-        // peer vanished without close_notify. That genuinely IS end of stream, so keep returning -1
-        // for it; anything else is a real error and must surface as one rather than as a silent
-        // truncation the caller cannot distinguish from success.
+        // §521 (corrects §517): SSL_ERROR_SYSCALL with n==0 and no errno is precisely how OpenSSL
+        // reports an *UNEXPECTED* EOF — the peer vanished WITHOUT close_notify. It is NOT clean end
+        // of stream; only SSL_ERROR_ZERO_RETURN is. Returning -1 here reinstated the exact silent
+        // truncation §517 set out to remove: a body cut short mid-transfer looked to Java like a
+        // stream that had ended normally. Report it as the transport failure it is and let the
+        // caller decide (OkHttp surfaces "unexpected end of stream" and can retry).
         if (e == 5 /*SSL_ERROR_SYSCALL*/ && n == 0 && errno == 0) {
-            wl_tls_log_io("read", "unclean EOF (no close_notify)", n, e, fd);
-            free(tmp); return -1;
+            wl_tls_log_io("read", "unexpected EOF (no close_notify)", n, e, fd);
+            free(tmp);
+            wl_tls_throw_named(env, "javax/net/ssl/SSLProtocolException",
+                               "WestlakeTLS: connection closed without close_notify");
+            return -1;
         }
         wl_tls_log_io("read", "fatal", n, e, fd);
         free(tmp);
@@ -1520,7 +1537,8 @@ static jint WL_TLS_write(JNIEnv* env, jclass, jlong handle, jint fd, jbyteArray 
         if (n > 0) { done += n; continue; }
         const int e = g_tls.SSL_get_error(ssl, n);
         if (e == 2 /*WANT_READ*/ || e == 3 /*WANT_WRITE*/) {
-            if (!wl_tls_wait((int)fd, e, deadline)) {
+            const WlWait w = wl_tls_wait((int)fd, e, deadline);
+            if (w != WL_WAIT_READY) {
                 wl_tls_log_io("write", "poll timeout/error", n, e, fd);
                 free(tmp); return -1;
             }

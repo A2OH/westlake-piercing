@@ -107,13 +107,16 @@ struct MemoryMethod {
     const char* name;
     const char* sig;
     void* fn;
+    bool essential;   // §523: binding failure here must fail the whole registration
 };
 
 const MemoryMethod kMemoryMethods[] = {
-    { "pokeByteArray", "(J[BII)V", reinterpret_cast<void*>(Memory_pokeByteArray) },
-    { "peekByteArray", "(J[BII)V", reinterpret_cast<void*>(Memory_peekByteArray) },
+    // pokeByteArray is the whole reason this file exists: DirectByteBuffer.put() has no other
+    // implementation here, and silently continuing without it reinstates the original bug.
+    { "pokeByteArray", "(J[BII)V", reinterpret_cast<void*>(Memory_pokeByteArray), true },
+    { "peekByteArray", "(J[BII)V", reinterpret_cast<void*>(Memory_peekByteArray), true },
     { "memmove", "(Ljava/lang/Object;ILjava/lang/Object;IJ)V",
-      reinterpret_cast<void*>(Memory_memmove) },
+      reinterpret_cast<void*>(Memory_memmove), false },
 };
 
 }  // namespace
@@ -126,11 +129,15 @@ int register_libcore_io_Memory(JNIEnv* env) {
         return -1;
     }
 
-    int bound = 0;
+    int bound = 0, essentialFail = 0;
     for (const MemoryMethod& m : kMemoryMethods) {
         JNINativeMethod one = { m.name, m.sig, m.fn };
         if (env->RegisterNatives(clazz, &one, 1) == JNI_OK) {
             ++bound;
+        } else if (m.essential) {
+            env->ExceptionClear();
+            ++essentialFail;
+            fprintf(stderr, "[WESTLAKE-523] ESSENTIAL Memory.%s%s FAILED to bind\n", m.name, m.sig);
         } else {
             // Absent or already-satisfied methods are not fatal: the point of
             // registering singly is that one failure cannot mask the others.
@@ -138,11 +145,14 @@ int register_libcore_io_Memory(JNIEnv* env) {
             fprintf(stderr, "[WESTLAKE-504] Memory.%s%s not registered\n", m.name, m.sig);
         }
     }
-    fprintf(stderr, "[WESTLAKE-504] libcore.io.Memory bound %d/%d\n",
-            bound, static_cast<int>(sizeof(kMemoryMethods) / sizeof(kMemoryMethods[0])));
+    fprintf(stderr, "[WESTLAKE-504] libcore.io.Memory bound %d/%d (essential failures=%d)\n",
+            bound, static_cast<int>(sizeof(kMemoryMethods) / sizeof(kMemoryMethods[0])),
+            essentialFail);
 
     env->DeleteLocalRef(clazz);
-    return bound > 0 ? 0 : -1;
+    // §523: "bound > 0" reported success even when pokeByteArray — the only method that matters —
+    // had failed. Success now requires every essential method.
+    return essentialFail == 0 ? 0 : -1;
 }
 
 }  // namespace android

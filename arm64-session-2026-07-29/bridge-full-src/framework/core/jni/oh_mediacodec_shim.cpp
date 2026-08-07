@@ -23,6 +23,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <string>
+#include <atomic>
 
 #define MCLOG(...) __android_log_print(ANDROID_LOG_INFO, "OH_MCShim", __VA_ARGS__)
 #define MCERR(...) __android_log_print(ANDROID_LOG_ERROR, "OH_MCShim", __VA_ARGS__)
@@ -111,7 +112,9 @@ struct Codec {
     // OH async delivers the OH_AVBuffer in the callback; retain it per index so
     // getBuffer/queueInput can use it (OH_AudioCodec_GetInputBuffer(idx) returns null).
     std::map<uint32_t, OH_AVBuffer*> inBufs, outBufs;
-    // §510: the ByteBuffer objects handed to Java, cached per index as GLOBAL refs.
+    // §519: the §510 per-index ByteBuffer cache was removed — see nGetBuffer.
+    // (kept only as a marker of what NOT to reintroduce without re-reading AOSP MediaCodec.)
+    // §510 note (obsolete):
     // android.media.MediaCodec keeps a per-index cache (mCachedInputBuffers/mCachedOutputBuffers)
     // and returns the SAME object for repeat getInputBuffer/getOutputBuffer(index) calls. Callers
     // rely on that: ExoPlayer's DefaultAudioSink.handleBuffer opens with
@@ -120,7 +123,6 @@ struct Codec {
     // throws a bare IllegalArgumentException (Assertions.checkArgument(boolean) passes no message —
     // which is exactly the message-less IAE seen here), before a single PCM byte is written.
     // releaseOutputBuffer then never runs, so the codec's output pool drains and cbOutput freezes.
-    std::map<uint32_t, jobject> inBufObjs, outBufObjs;
     int32_t sampleRate = 44100, channels = 2;
     bool formatSent = false;   // emit INFO_OUTPUT_FORMAT_CHANGED once (sync path)
     bool started = false;
@@ -287,6 +289,73 @@ static jint nDequeueInput(JNIEnv* env, jobject thiz, jlong timeoutUs) {
 }
 
 // getBuffer(boolean input, int index) -> ByteBuffer (direct, over OH_AVBuffer)
+// §515: ByteBuffer.order(ByteOrder.nativeOrder()), resolved ONCE at registration rather than lazily
+// in the hot path. AOSP's MediaCodec does the same thing in createByteBufferFromABuffer; java.nio
+// specifies that every freshly created ByteBuffer — NewDirectByteBuffer included — is BIG_ENDIAN,
+// while every caller assumes little-endian PCM. ExoPlayer asserts it outright:
+//     if (outputBuffer == null) Assertions.checkArgument(buffer.order() == ByteOrder.LITTLE_ENDIAN);
+// (DefaultAudioSink.handleBuffer, instruction [153] in the minified dex). checkArgument(boolean)
+// throws IllegalArgumentException with NO message, which is why this was invisible for so long.
+static jmethodID g_bbOrder = nullptr;
+static jobject   g_nativeOrder = nullptr;   // global ref
+
+static void resolveByteOrder(JNIEnv* env) {
+    if (g_bbOrder != nullptr && g_nativeOrder != nullptr) return;
+    jclass bbC = env->FindClass("java/nio/ByteBuffer");
+    jclass boC = env->FindClass("java/nio/ByteOrder");
+    if (bbC != nullptr && boC != nullptr) {
+        g_bbOrder = env->GetMethodID(bbC, "order", "(Ljava/nio/ByteOrder;)Ljava/nio/ByteBuffer;");
+        jmethodID nativeOrderM = env->GetStaticMethodID(boC, "nativeOrder", "()Ljava/nio/ByteOrder;");
+        if (nativeOrderM != nullptr) {
+            jobject no = env->CallStaticObjectMethod(boC, nativeOrderM);
+            if (no != nullptr) { g_nativeOrder = env->NewGlobalRef(no); env->DeleteLocalRef(no); }
+        }
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (bbC != nullptr) env->DeleteLocalRef(bbC);
+    if (boC != nullptr) env->DeleteLocalRef(boC);
+    if (g_bbOrder == nullptr || g_nativeOrder == nullptr)
+        MCERR("byte-order helpers unresolved; codec buffers would stay BIG_ENDIAN");
+}
+
+// Build the Java wrapper for a codec buffer. Calls INTO Java, so it must run with no shim lock held.
+static jobject makeOrderedBuffer(JNIEnv* env, uint8_t* addr, int32_t cap) {
+    jobject local = env->NewDirectByteBuffer(addr, cap);
+    if (local == nullptr) return nullptr;
+    // §519: native order is not decoration, it is the contract. Returning a BIG_ENDIAN buffer is the
+    // exact defect §515 fixed, so a failure here must NOT be swallowed — returning the buffer anyway
+    // would silently reinstate it. Leave any pending exception in flight for the caller.
+    if (g_bbOrder == nullptr || g_nativeOrder == nullptr) {
+        MCERR("byte-order helpers unresolved; refusing to hand out a BIG_ENDIAN codec buffer");
+        env->DeleteLocalRef(local);
+        return nullptr;
+    }
+    jobject reordered = env->CallObjectMethod(local, g_bbOrder, g_nativeOrder);
+    if (env->ExceptionCheck()) {            // OOME / linkage / invocation failure — propagate it
+        env->DeleteLocalRef(local);
+        return nullptr;
+    }
+    if (reordered != nullptr) env->DeleteLocalRef(reordered);   // order() returns `this`
+    return local;                            // local ref: MediaCodec owns the lifetime, not us
+}
+
+// getBuffer(boolean input, int index) -> ByteBuffer (direct, over OH_AVBuffer)
+//
+// §519: the §510 per-index ByteBuffer cache is REMOVED. It was built on a false premise — that
+// android.media.MediaCodec returns the same object for repeat getInputBuffer/getOutputBuffer(index)
+// calls. AOSP does the opposite:
+//     ByteBuffer newBuffer = getBuffer(false, index);
+//     invalidateByteBuffer(mCachedOutputBuffers, index);
+//     mDequeuedOutputBuffers.put(index, newBuffer);
+//     return newBuffer;
+// i.e. it INVALIDATES the previous wrapper and hands back a new one. ExoPlayer's identity assertion
+// (`outputBuffer == null || buffer == outputBuffer`) holds because the SINK retains the object it was
+// given, not because the codec re-serves it.
+//
+// Caching therefore bought nothing and cost a great deal: a wrapper published after queue/release/
+// flush could cover recycled memory, nStop invalidated nothing, flush cleared state before p_Flush so
+// a callback could repopulate stale indices, and returning the stored global ref let another thread
+// DeleteGlobalRef it out from under the caller. The real fix here was always §515 (byte order).
 static jobject nGetBuffer(JNIEnv* env, jobject thiz, jboolean input, jint index) {
     Codec* c = getCodec(env, thiz); if (!c || !c->codec) return nullptr;
     OH_AVBuffer* b = nullptr;
@@ -294,77 +363,18 @@ static jobject nGetBuffer(JNIEnv* env, jobject thiz, jboolean input, jint index)
       auto& m = input ? c->inBufs : c->outBufs; auto it = m.find((uint32_t)index); if (it != m.end()) b = it->second; }
     if (!b) b = input ? p_GetInputBuffer(c->codec, index) : p_GetOutputBuffer(c->codec, index);
     uint8_t* addr = b ? p_BufAddr(b) : nullptr; int32_t cap = b ? p_BufCap(b) : 0;
-    static int dbg = 0; if (dbg++ < 12) MCLOG("getBuffer in=%d idx=%d buf=%p addr=%p cap=%d", input, index, (void*)b, (void*)addr, cap);
+    // §511: running total, never a hard cap — a counter that cannot exceed its ceiling reads exactly
+    // like a stall, which cost this bring-up days.
+    static std::atomic<long> gbN{0};
+    const long nth = ++gbN;
+    if (nth <= 3 || (nth % 500) == 0)
+        MCLOG("getBuffer #%ld in=%d idx=%d buf=%p addr=%p cap=%d", nth, input, index, (void*)b, (void*)addr, cap);
     if (!b || !addr || cap <= 0) return nullptr;
-
-    // §510: return the SAME ByteBuffer for repeat calls on an index — see the note on inBufObjs.
-    // The cache is keyed on index and invalidated whenever the underlying OH_AVBuffer is handed
-    // back (releaseOutputBuffer / queueInputBuffer / flush / stop), so a stale mapping can never
-    // outlive the memory it points at.
-    std::lock_guard<std::mutex> l(c->mu);
-    auto& objs = input ? c->inBufObjs : c->outBufObjs;
-    auto oit = objs.find((uint32_t)index);
-    if (oit != objs.end() && oit->second != nullptr) {
-        // Guard against the address moving under a cached wrapper: if OH handed us a different
-        // backing pointer for this index, the old wrapper is stale and must be replaced.
-        void* cachedAddr = env->GetDirectBufferAddress(oit->second);
-        if (cachedAddr == (void*)addr) return oit->second;
-        env->DeleteGlobalRef(oit->second);
-        objs.erase(oit);
-    }
-    jobject local = env->NewDirectByteBuffer(addr, cap);
-    if (!local) return nullptr;
-    // §515: give the buffer NATIVE byte order, exactly as AOSP's MediaCodec does in
-    // createByteBufferFromABuffer. java.nio says every freshly created ByteBuffer is BIG_ENDIAN, and
-    // NewDirectByteBuffer is no exception — so without this the buffers we hand out are big-endian
-    // while every caller assumes little-endian PCM. ExoPlayer checks it explicitly:
-    //     if (outputBuffer == null) Assertions.checkArgument(buffer.order() == ByteOrder.LITTLE_ENDIAN);
-    // (DefaultAudioSink.handleBuffer, instruction [153] in the minified dex), and
-    // Assertions.checkArgument(boolean) throws IllegalArgumentException with NO message — which is
-    // precisely the message-less IAE that was aborting the sink before a single PCM byte was written.
-    {
-        static jmethodID s_order = nullptr;
-        static jobject s_nativeOrder = nullptr;   // global ref, resolved once
-        if (s_order == nullptr || s_nativeOrder == nullptr) {
-            jclass bbC = env->FindClass("java/nio/ByteBuffer");
-            jclass boC = env->FindClass("java/nio/ByteOrder");
-            if (bbC && boC) {
-                jmethodID nativeOrderM = env->GetStaticMethodID(boC, "nativeOrder", "()Ljava/nio/ByteOrder;");
-                s_order = env->GetMethodID(bbC, "order", "(Ljava/nio/ByteOrder;)Ljava/nio/ByteBuffer;");
-                if (nativeOrderM) {
-                    jobject no = env->CallStaticObjectMethod(boC, nativeOrderM);
-                    if (no) { s_nativeOrder = env->NewGlobalRef(no); env->DeleteLocalRef(no); }
-                }
-            }
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            if (bbC) env->DeleteLocalRef(bbC);
-            if (boC) env->DeleteLocalRef(boC);
-        }
-        if (s_order && s_nativeOrder) {
-            jobject reordered = env->CallObjectMethod(local, s_order, s_nativeOrder);
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            // order() returns the same buffer; keep the local ref we already hold.
-            if (reordered) env->DeleteLocalRef(reordered);
-        } else {
-            MCERR("§515: could not set native byte order on the codec ByteBuffer");
-        }
-    }
-    jobject global = env->NewGlobalRef(local);
-    env->DeleteLocalRef(local);
-    if (!global) return nullptr;
-    objs[(uint32_t)index] = global;
-    return global;
+    return makeOrderedBuffer(env, addr, cap);
 }
 
 // §510: drop a cached ByteBuffer once its OH_AVBuffer goes back to the codec. Must be called with
 // c->mu held, or from a path that owns the codec exclusively.
-static void dropBufObjLocked(JNIEnv* env, Codec* c, bool input, uint32_t index) {
-    auto& objs = input ? c->inBufObjs : c->outBufObjs;
-    auto it = objs.find(index);
-    if (it == objs.end()) return;
-    if (it->second) env->DeleteGlobalRef(it->second);
-    objs.erase(it);
-}
 
 // native_queueInputBuffer(int index, int offset, int size, long pts, int flags)
 static void nQueueInput(JNIEnv* env, jobject thiz, jint index, jint offset, jint size, jlong pts, jint flags) {
@@ -376,8 +386,7 @@ static void nQueueInput(JNIEnv* env, jobject thiz, jint index, jint offset, jint
     OH_AVBuffer* b = nullptr;
     { std::lock_guard<std::mutex> l(c->mu);
       auto it = c->inBufs.find((uint32_t)index); if (it != c->inBufs.end()) b = it->second;
-      c->inBufs.erase((uint32_t)index);
-      dropBufObjLocked(env, c, /*input=*/true, (uint32_t)index); }   // §510: buffer goes back to OH
+      c->inBufs.erase((uint32_t)index); }
     if (!b) b = p_GetInputBuffer(c->codec, index);
     if (b) { OH_AVCodecBufferAttr a{ pts, size, offset, (uint32_t)((flags & MC_FLAG_EOS)?OH_FLAG_EOS:OH_FLAG_NONE) }; p_BufSetAttr(b, &a); }
     p_PushInput(c->codec, (uint32_t)index);
@@ -412,8 +421,7 @@ static jint nDequeueOutput(JNIEnv* env, jobject thiz, jobject info, jlong timeou
 static void nReleaseOutput(JNIEnv* env, jobject thiz, jint index, jboolean, jboolean, jlong) {
     Codec* c = getCodec(env, thiz); if (!c || !c->codec) return;
     { std::lock_guard<std::mutex> l(c->mu);
-      c->outBufs.erase((uint32_t)index);
-      dropBufObjLocked(env, c, /*input=*/false, (uint32_t)index); }   // §510
+      c->outBufs.erase((uint32_t)index); }
     p_FreeOutput(c->codec, (uint32_t)index);
 }
 
@@ -438,13 +446,8 @@ static jobject nGetOutputFormat(JNIEnv* env, jobject thiz, jint) { MCLOG("getOut
 static jobject nGetFormat(JNIEnv* env, jobject thiz, jboolean in) { MCLOG("getFormatNative(input=%d) called", in); return buildFormatMap(env, getCodec(env, thiz)); }
 
 static void nStop(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c&&c->codec&&g_ok) p_Stop(c->codec); }
-static void dropAllBufObjsLocked(JNIEnv* env, Codec* c) {   // §510
-    for (auto& kv : c->inBufObjs)  if (kv.second) env->DeleteGlobalRef(kv.second);
-    for (auto& kv : c->outBufObjs) if (kv.second) env->DeleteGlobalRef(kv.second);
-    c->inBufObjs.clear(); c->outBufObjs.clear();
-}
-static void nFlush(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c){ {std::lock_guard<std::mutex> l(c->mu); c->inIdx.clear(); c->outQ.clear(); c->inBufs.clear(); c->outBufs.clear(); dropAllBufObjsLocked(env, c);} if(c->codec&&g_ok) p_Flush(c->codec);} }
-static void nRelease(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c){ {std::lock_guard<std::mutex> l(c->mu); dropAllBufObjsLocked(env, c);} if(c->codec&&g_ok) p_Destroy(c->codec); if(f_ctx) env->SetLongField(thiz,f_ctx,0); delete c; } }
+static void nFlush(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c){ {std::lock_guard<std::mutex> l(c->mu); c->inIdx.clear(); c->outQ.clear(); c->inBufs.clear(); c->outBufs.clear();} if(c->codec&&g_ok) p_Flush(c->codec);} }
+static void nRelease(JNIEnv* env, jobject thiz) { Codec* c=getCodec(env,thiz); if(c){ {std::lock_guard<std::mutex> l(c->mu);} if(c->codec&&g_ok) p_Destroy(c->codec); if(f_ctx) env->SetLongField(thiz,f_ctx,0); delete c; } }
 static void nInit(JNIEnv*, jclass) {}
 static void nReset(JNIEnv* env, jobject thiz) { nFlush(env, thiz); }
 static void nSetCallback(JNIEnv* env, jobject thiz, jobject callback) {
@@ -564,6 +567,7 @@ static jobject mclGlobalSettings(JNIEnv* env, jclass) {
 }
 
 extern "C" int register_MediaCodec_shim(JNIEnv* env) {
+    resolveByteOrder(env);   // §515: resolve once, not lazily in getBuffer
     jclass mc = env->FindClass("android/media/MediaCodec");
     if (!mc) { if(env->ExceptionCheck())env->ExceptionClear(); MCERR("no MediaCodec class"); return -1; }
     f_ctx = env->GetFieldID(mc, "mNativeContext", "J");
