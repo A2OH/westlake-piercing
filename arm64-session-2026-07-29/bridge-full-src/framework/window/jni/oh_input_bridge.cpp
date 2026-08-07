@@ -1768,7 +1768,11 @@ int32_t OHInputBridge::dispatchTouchViaViewRoot(int32_t action, float x, float y
         if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); LOGE("dispatchTouchViaViewRoot: DOWN dispatchTouchOnMain THREW"); }
         env->DeleteLocalRef(down);
     }
-    usleep(150 * 1000);
+    // §559: was 150 ms. It must stay ABOVE ViewConfiguration.getTapTimeout() (100 ms) so a
+    // RecyclerView row's postDelayed(CheckForTap) fires and sets PREPRESSED before the UP
+    // arrives -- that is what §405 found empirically. 120 ms keeps that margin and returns
+    // 30 ms per tap.
+    usleep(120 * 1000);
     // UP
     jlong T2 = env->CallStaticLongMethod(scCls, upmM);
     jobject up = env->CallStaticObjectMethod(meCls, obtain, T, T2, (jint)1, (jfloat)x, (jfloat)y, (jint)0);
@@ -1785,7 +1789,10 @@ int32_t OHInputBridge::dispatchTouchViaViewRoot(int32_t action, float x, float y
         if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); LOGE("dispatchTouchViaViewRoot: UP dispatchTouchOnMain THREW"); }
         env->DeleteLocalRef(up);
     }
-    usleep(100 * 1000);  // let the UP run() complete on the UI thread
+    // §559: was 100 ms. Since §554 the UP is POSTED to the UI thread, so this only has to be
+    // long enough for that post to run before the OHTI counters are read below -- it does not
+    // gate the tap itself, which is already in flight.
+    usleep(50 * 1000);   // let the posted UP run() complete on the UI thread
     // WESTLAKE §405: these counters live on OHTouchInjector, which is ABSENT on this board (§394
     // falls back to a direct dispatch).  Reading static fields off a null jclass makes ART abort
     // ("Runtime aborting..." with no pending exception) — that abort, not the touch, is what killed

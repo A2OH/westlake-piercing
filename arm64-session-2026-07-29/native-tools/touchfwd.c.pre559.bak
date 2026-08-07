@@ -63,12 +63,7 @@ int main(int argc, char** argv) {
                     snprintf(buf, sizeof(buf), "%d %d\n", x, y);
                 emit(buf);
                 sawDown = 0; downX = downY = -1;
-                /* §559: was 120 ms. That was sized for the bridge's old 300 ms poll; §558 cut
-                 * the poll to 25 ms, so this is now pure dead time on every physical tap.
-                 * ⚠️It cannot go to zero: the channel is a single file that the bridge
-                 * truncates after reading, so a second gesture written before that read would
-                 * overwrite the first and be lost. 25 ms == one poll period. */
-                usleep(25 * 1000);
+                usleep(120 * 1000);   /* let the bridge consume it before the next gesture */
             }
         }
     }
