@@ -38,6 +38,7 @@
 #include "oh_ability_manager_client.h"  // 2026-06-04 focus heartbeat (moveMissionToFront)
 #include <android/log.h>
 #include <atomic>
+#include <set>
 #include <map>
 #include <thread>
 #include <string>
@@ -388,8 +389,109 @@ void OHWindowManagerClient::disconnect() {
     connected_ = false;
 }
 
+// WESTLAKE §538: strong refs to each session's APP_WINDOW_NODE (the §347 parent of the
+// self-drawing content node), keyed by persistentId. §347 needs the ref — the parent is only a
+// local shared_ptr in createSession and dropping it destroys the node the session was built on —
+// but it lived in a function-local static that nothing erased, so nodes leaked and RS kept
+// compositing a dismissed dialog's last frame. destroySession() now erases from here.
+static std::map<int32_t, std::shared_ptr<OHOS::Rosen::RSSurfaceNode>>& wl_window_nodes() {
+    static std::map<int32_t, std::shared_ptr<OHOS::Rosen::RSSurfaceNode>> m;
+    return m;
+}
+
 // WESTLAKE §253: app IWindow (global ref) + re-send helper, see wl_send_app_visible().
 jobject g_wlAppWindow = nullptr;
+
+// WESTLAKE §537 — force every window's surfaceInsets to zero, every relayout.
+//
+// AOSP gives an ELEVATED window (dialogs, bottom sheets) a surface LARGER than its frame so the
+// drop shadow has somewhere to land: WMS sizes the surface to frame+surfaceInsets and positions it
+// at (-left,-top), and ViewRootImpl compensates by setting the renderer up with those insets — i.e.
+// it draws ALL content translated by (+left,+top).
+// This adapter creates the OH surface at exactly the frame size at (0,0) and knows nothing about
+// the insets, so that translation was never cancelled out: every dialog was DRAWN shifted
+// down-right, clipping its right edge and pushing its buttons under the gesture bar. Measured:
+// design_bottom_sheet laid out at [0,1155 1200x765] (correct, full width) yet painted inset by
+// ~(78,85). Input was unaffected because it uses layout coordinates — which is why a tap at x=620
+// still produced exactly the 52% the layout implies, and why this looked like a "not centered"
+// layout bug rather than a rendering one.
+// Zeroing is the right fix rather than growing the surface: these windows are already full-screen,
+// so the shadow has room inside the frame.
+// Runs on the relayout path (before performDraw in the same traversal), so it takes effect on the
+// very first frame of a newly shown dialog.
+extern "C" void wl_zero_surface_insets(JNIEnv* env) {
+    if (env == nullptr) { return; }
+    // §540 bisect gate — `touch /data/local/tmp/wl_no_537` disables §537.
+    static const bool wl_no537 = (access("/data/local/tmp/wl_no_537", F_OK) == 0);
+    if (wl_no537) { return; }
+    jclass wmg = env->FindClass("android/view/WindowManagerGlobal");
+    jmethodID getInst = (wmg != nullptr)
+        ? env->GetStaticMethodID(wmg, "getInstance", "()Landroid/view/WindowManagerGlobal;") : nullptr;
+    jobject inst = (getInst != nullptr) ? env->CallStaticObjectMethod(wmg, getInst) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); }
+    jfieldID rootsFld = (wmg != nullptr && inst != nullptr)
+        ? env->GetFieldID(wmg, "mRoots", "Ljava/util/ArrayList;") : nullptr;
+    jobject roots = (rootsFld != nullptr) ? env->GetObjectField(inst, rootsFld) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); }
+    if (roots == nullptr) { return; }
+
+    jclass listCls = env->GetObjectClass(roots);
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jint n = (sizeM != nullptr) ? env->CallIntMethod(roots, sizeM) : 0;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); n = 0; }
+
+    for (jint i = 0; i < n; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (vri == nullptr) { continue; }
+        jclass vriCls = env->GetObjectClass(vri);
+        jfieldID waFld = env->GetFieldID(vriCls, "mWindowAttributes",
+                                         "Landroid/view/WindowManager$LayoutParams;");
+        if (waFld == nullptr) { env->ExceptionClear(); }
+        jobject wa = (waFld != nullptr) ? env->GetObjectField(vri, waFld) : nullptr;
+        if (env->ExceptionCheck()) { env->ExceptionClear(); }
+        if (wa != nullptr) {
+            jclass lpCls = env->GetObjectClass(wa);
+            jfieldID siFld = env->GetFieldID(lpCls, "surfaceInsets", "Landroid/graphics/Rect;");
+            if (siFld == nullptr) { env->ExceptionClear(); }
+            jobject si = (siFld != nullptr) ? env->GetObjectField(wa, siFld) : nullptr;
+            if (env->ExceptionCheck()) { env->ExceptionClear(); }
+            if (si != nullptr) {
+                jclass rectCls = env->GetObjectClass(si);
+                jfieldID lF = env->GetFieldID(rectCls, "left", "I");
+                jfieldID tF = env->GetFieldID(rectCls, "top", "I");
+                jfieldID rF = env->GetFieldID(rectCls, "right", "I");
+                jfieldID bF = env->GetFieldID(rectCls, "bottom", "I");
+                if (lF && tF && rF && bF) {
+                    const jint l = env->GetIntField(si, lF), t = env->GetIntField(si, tF);
+                    const jint r = env->GetIntField(si, rF), b = env->GetIntField(si, bF);
+                    if (l != 0 || t != 0 || r != 0 || b != 0) {
+                        env->SetIntField(si, lF, 0); env->SetIntField(si, tF, 0);
+                        env->SetIntField(si, rF, 0); env->SetIntField(si, bF, 0);
+                        static int wl_logged = 0;
+                        if (wl_logged < 8) {
+                            wl_logged++;
+                            fprintf(stderr,
+                                    "[WESTLAKE-WMC] §537 root %d/%d surfaceInsets %d,%d,%d,%d -> 0\n",
+                                    (int) i, (int) n, (int) l, (int) t, (int) r, (int) b);
+                            fflush(stderr);
+                        }
+                    }
+                } else {
+                    env->ExceptionClear();
+                }
+                env->DeleteLocalRef(rectCls);
+                env->DeleteLocalRef(si);
+            }
+            env->DeleteLocalRef(lpCls);
+            env->DeleteLocalRef(wa);
+        }
+        env->DeleteLocalRef(vriCls);
+        env->DeleteLocalRef(vri);
+    }
+    env->DeleteLocalRef(listCls);
+    env->DeleteLocalRef(roots);
+}
 
 // Sends IWindow.dispatchAppVisibility(true). Safe to call repeatedly; logs once per process.
 extern "C" void wl_send_app_visible(JNIEnv* env) {
@@ -403,20 +505,28 @@ extern "C" void wl_send_app_visible(JNIEnv* env) {
     // Measured: on the 2nd relayout `[WESTLAKE-WSA] gsni:a` prints and `gsni:b` never does, i.e.
     // it hangs inside the IWindow.dispatchAppVisibility upcall below.
     // Cap it: after bring-up this must be a no-op.
+    //
+    // WESTLAKE §535: cap the UPCALL only, and do NOT return — the per-root block below has to keep
+    // running, because a window created later (a Dialog / BottomSheet) also needs bring-up. See the
+    // §535 note on that block.
     static int wl_calls = 0;
-    if (wl_calls >= 1) { return; }   // §283o: cap=1 -- the SECOND call is the one that deadlocks
-    wl_calls++;
-    static int wl_sent = 0;
-    jclass c = env->GetObjectClass(g_wlAppWindow);
-    jmethodID m = (c != nullptr) ? env->GetMethodID(c, "dispatchAppVisibility", "(Z)V") : nullptr;
-    if (m == nullptr) { env->ExceptionClear(); return; }
-    env->CallVoidMethod(g_wlAppWindow, m, JNI_TRUE);
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-    } else if (wl_sent < 3) {
-        wl_sent++;
-        fprintf(stderr, "[WESTLAKE-APPVIS] re-sent dispatchAppVisibility(true) (late)\n");
-        fflush(stderr);
+    if (wl_calls < 1) {
+        wl_calls++;
+        static int wl_sent = 0;
+        jclass c = env->GetObjectClass(g_wlAppWindow);
+        jmethodID m = (c != nullptr) ? env->GetMethodID(c, "dispatchAppVisibility", "(Z)V") : nullptr;
+        if (m == nullptr) {
+            env->ExceptionClear();
+        } else {
+            env->CallVoidMethod(g_wlAppWindow, m, JNI_TRUE);
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            } else if (wl_sent < 3) {
+                wl_sent++;
+                fprintf(stderr, "[WESTLAKE-APPVIS] re-sent dispatchAppVisibility(true) (late)\n");
+                fflush(stderr);
+            }
+        }
     }
 
     // WESTLAKE §255: BYPASS `W` AND DRIVE ViewRootImpl DIRECTLY.
@@ -436,10 +546,35 @@ extern "C" void wl_send_app_visible(JNIEnv* env) {
         // became possible after §283i/§283m), doing that while hwui's RenderThread is mid-EGL-bind
         // deadlocks the UI thread: measured, the 2nd relayout hangs here
         // ([WESTLAKE-WSA] gsni:a prints, gsni:b never does).
-        // Run the block only while it is still doing bring-up work.
-        static int wl_dd_calls = 0;
-        if (wl_dd_calls >= 4) { return; }
-        wl_dd_calls++;
+        //
+        // WESTLAKE §535 — the cap used to be GLOBAL (`wl_dd_calls >= 4`), which fixed the deadlock
+        // but silently broke every Dialog and BottomSheet in the app. A dialog is a SECOND
+        // ViewRootImpl created long after startup, and it needs exactly the same bring-up: without
+        // it `mAppVisible` stays false, `getHostVisibility()` returns GONE, and performTraversals
+        // bails — so the window is created, parented, Foregrounded and ranked on top by SceneBoard
+        // (WMS showed WinId 147 at ZOrd 103, RS showed hasConsumer=1 Visible=1) yet nothing is ever
+        // drawn into it. Measured: only ONE ViewRootImpl ever reached performDraw.
+        //
+        // The global cap was the wrong shape. What §283o actually requires is "never re-run
+        // enableHardwareAcceleration() on a root that is ALREADY brought up" — that is a PER-ROOT
+        // property, not a call count. So gate per root identity: every ViewRootImpl gets bring-up
+        // exactly once, ever, and an already-bound root is never touched again. The main window is
+        // still done once at startup (deadlock protection preserved) and a dialog gets its own
+        // bring-up when it appears.
+        // §540 bisect gate: `touch /data/local/tmp/wl_no_535` restores the pre-§535 GLOBAL cap, so
+        // the two candidate regressions can be isolated by restart instead of rebuild. A file check
+        // rather than getenv/param because the spawned child rewrites `environ`.
+        static const bool wl_no535 = (access("/data/local/tmp/wl_no_535", F_OK) == 0);
+        if (wl_no535) {
+            static int wl_legacyCalls = 0;
+            if (wl_legacyCalls >= 4) { return; }
+            wl_legacyCalls++;
+        }
+        static std::set<jint> wl_brought_up;
+        jclass sysCls = env->FindClass("java/lang/System");
+        jmethodID idHashM = (sysCls != nullptr)
+            ? env->GetStaticMethodID(sysCls, "identityHashCode", "(Ljava/lang/Object;)I") : nullptr;
+        if (idHashM == nullptr) { env->ExceptionClear(); }
         jclass wmg = env->FindClass("android/view/WindowManagerGlobal");
         jmethodID getInst = (wmg != nullptr)
             ? env->GetStaticMethodID(wmg, "getInstance", "()Landroid/view/WindowManagerGlobal;")
@@ -459,6 +594,20 @@ extern "C" void wl_send_app_visible(JNIEnv* env) {
             for (jint i = 0; i < n; ++i) {
                 jobject vri = env->CallObjectMethod(roots, getM, i);
                 if (vri == nullptr) { continue; }
+
+                // §535: one bring-up per ViewRootImpl, ever. Identity hash rather than the object
+                // itself so nothing has to be kept alive across calls; if it is unavailable, fall
+                // back to running bring-up (a missed dialog is worse than a repeat).
+                if (idHashM != nullptr) {
+                    jint vriId = env->CallStaticIntMethod(sysCls, idHashM, vri);
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                    } else if (!wl_brought_up.insert(vriId).second) {
+                        env->DeleteLocalRef(vri);
+                        continue;                 // already brought up — never redo (§283o)
+                    }
+                }
+
                 jclass vriCls = env->GetObjectClass(vri);
                 // WESTLAKE §256: SET `mAppVisible` DIRECTLY, then force a traversal.
                 // §255 showed even ViewRootImpl.dispatchAppVisibility(true) -- which unconditionally
@@ -1450,6 +1599,23 @@ OHWindowSession OHWindowManagerClient::createSession(
                     wrote ? 1 : 0, v7err, persistentId,
                     static_cast<void*>(sessionObject.GetRefPtr()));
             fflush(stderr);
+            // WESTLAKE §566: start the input side-channels REGARDLESS of whether SceneBoard
+            // adopted us.  They used to live only in the `v7err == 0` branch below, which made
+            // input hostage to session adoption — and adoption needs a parent main window that
+            // the entry.hap ability never provides (it is a launcher-icon stub: `aa dump -l`
+            // reports `window attached #0` even when FOREGROUND).  After a reboot that reliably
+            // yields `V7 err=10` / `parentId=0`, and then the app RENDERS PERFECTLY but is
+            // completely undrivable — 7 launches in a row looked like an input regression and
+            // were really this gate.  The channels only poll two files and inject through
+            // ViewRootImpl, so they have no dependency on the session (the §391 comment below
+            // already said as much); both starters are idempotent (atomic once-flag), so the
+            // call in the adopted path is now simply a no-op.
+            if (getenv("WL_MMI") == nullptr) {
+                OHInputBridge::getInstance().startTapControlChannel();
+                OHInputBridge::getInstance().startTextControlChannel();
+                fprintf(stderr, "[WESTLAKE-WMC] §566 tap/text side-channels started (ungated)\n");
+                fflush(stderr);
+            }
             if (v7err == 0 && sessionObject != nullptr) {
                 // WESTLAKE §338: SHOW the session we just created.
                 // §337 got CreateAndConnectSpecificSession to SUCCEED (persistentId 488/489, real
@@ -1583,16 +1749,19 @@ OHWindowSession OHWindowManagerClient::createSession(
                     entry.sessionId      = persistentId;
                     entry.surfaceNodeId  = static_cast<int64_t>(surfaceNode->GetId());
                     entry.sessionProxy   = nullptr;
+                    entry.sessionRemote  = sessionObject;   // §536: keep it, teardown needs it
                     entry.stageAdapter   = sessionStage;
                     entry.eventChannel   = eventChannel;
                     // §347: hwui renders into the SELF_DRAWING child (RS composites that from its
                     // buffer); the APP_WINDOW_NODE parent stays the session's window node.
                     // The parent is only a local shared_ptr here, so keep a strong ref of its own —
                     // dropping it would destroy the very node the session was built on.
+                    // §538: this used to be a FUNCTION-LOCAL static map that nothing ever erased,
+                    // so the window node outlived its session forever — a dismissed dialog kept
+                    // compositing its last frame even after §536 tore the OH session down. Keep
+                    // the strong ref (still required), but somewhere destroySession() can reach.
                     if (wl_contentNode != nullptr) {
-                        static std::map<int32_t, std::shared_ptr<OHOS::Rosen::RSSurfaceNode>>
-                            wl_windowNodes;
-                        wl_windowNodes[persistentId] = surfaceNode;
+                        wl_window_nodes()[persistentId] = surfaceNode;
                     }
                     entry.surfaceNode    = (wl_contentNode != nullptr) ? wl_contentNode : surfaceNode;
                     entry.windowId       = static_cast<uint32_t>(persistentId);
@@ -1999,13 +2168,64 @@ void OHWindowManagerClient::destroySession(int32_t sessionId) {
     OH_BR_IPC_SCOPE("WMClient.destroySession", "session=%{public}d", sessionId);
 
     OHOS::sptr<OHOS::Rosen::ISession> sessionProxy;
+    OHOS::sptr<OHOS::IRemoteObject> sessionRemote;
+    std::shared_ptr<OHOS::Rosen::RSSurfaceNode> contentNode;
     {
         std::lock_guard<std::recursive_mutex> lock(sessionMutex_);
         auto it = sessions_.find(sessionId);
         if (it != sessions_.end()) {
-            sessionProxy = it->second.sessionProxy;
+            sessionProxy  = it->second.sessionProxy;
+            sessionRemote = it->second.sessionRemote;
+            contentNode   = it->second.surfaceNode;
             sessions_.erase(it);
         }
+    }
+
+    // WESTLAKE §538 — take the nodes OUT OF THE RS TREE, do not merely drop the refs.
+    // Releasing the last shared_ptr is not enough on its own and is not immediate; RS keeps
+    // compositing a node that is still parented, which is exactly what left a dismissed dialog's
+    // last frame painted on screen after §536 had already destroyed its OH session (WMS listed one
+    // window, yet RSTree still showed two MainActivity SURFACE_NODEs, both consumer=1 visible=1).
+    // Detach child first, then the window node, then flush so RS acts on it now.
+    {
+        auto& nodes = wl_window_nodes();
+        auto nit = nodes.find(sessionId);
+        std::shared_ptr<OHOS::Rosen::RSSurfaceNode> windowNode =
+            (nit != nodes.end()) ? nit->second : nullptr;
+        if (contentNode != nullptr) { contentNode->RemoveFromTree(); }
+        if (windowNode != nullptr && windowNode != contentNode) { windowNode->RemoveFromTree(); }
+        if (nit != nodes.end()) { nodes.erase(nit); }
+        OHOS::Rosen::RSTransaction::FlushImplicitTransaction();
+        fprintf(stderr, "[WESTLAKE-WMC] §538 detached RS nodes for session=%d (content=%d window=%d)\n",
+                sessionId, contentNode != nullptr ? 1 : 0, windowNode != nullptr ? 1 : 0);
+        fflush(stderr);
+    }
+
+    // WESTLAKE §536 — V7 teardown. A session created by CreateAndConnectSpecificSession is a
+    // SPECIFIC session: the legacy IWindowManager::RemoveWindow/DestroyWindow below does not own
+    // it, so before §536 a dismissed dialog kept its OH window forever — WMS still listed 148/149/
+    // 150 stacked after every dialog had already left WindowManagerGlobal.mRoots, and the screen
+    // kept showing the last frame each one drew. The client-side teardown is ISession
+    // Background -> Disconnect, sent exactly the way §338 sends Foreground.
+    //   SessionInterfaceCode: TRANS_ID_CONNECT=0, FOREGROUND=1, BACKGROUND=2, DISCONNECT=3.
+    // Both handlers read (bool isFromClient, string identityToken). Failures are logged and fall
+    // through to the legacy path rather than being fatal.
+    if (sessionRemote != nullptr) {
+        auto sendSessionCall = [&](uint32_t code, const char* what) {
+            OHOS::MessageParcel data;
+            OHOS::MessageParcel reply;
+            OHOS::MessageOption option;
+            const bool wrote = data.WriteInterfaceToken(u"OHOS.ISession") &&
+                               data.WriteBool(true) &&   // isFromClient
+                               data.WriteString("");     // identityToken
+            const int32_t err = wrote ? sessionRemote->SendRequest(code, data, reply, option) : -1;
+            const int32_t ret = (err == 0) ? reply.ReadInt32() : -1;
+            fprintf(stderr, "[WESTLAKE-WMC] §536 %s(persistentId=%d) wrote=%d err=%d ret=%d\n",
+                    what, sessionId, wrote ? 1 : 0, err, ret);
+            fflush(stderr);
+        };
+        sendSessionCall(2, "Background");
+        sendSessionCall(3, "Disconnect");
     }
 
     // G2.14c — legacy path uses IWindowManager.RemoveWindow + DestroyWindow.
