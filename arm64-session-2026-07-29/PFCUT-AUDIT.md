@@ -31,3 +31,35 @@ libart fix for the 44% predicate tax is a SINGLE cheap pre-filter gate at the to
 dispatch: "does this method's declaring class belong to any hooked package?" — short-circuiting the
 99.9% of invokes that match nothing, instead of 61 calls + 84 strcmp each. That also shrinks the
 JIT-interaction surface. Next step for both perf and JIT.
+
+## ★★HEADLINE (2026-08-08): this libart's PFCUT layer was built for the McDONALD'S app
+The 37 per-invoke strstr needles in DoCall<false>/<true> are NOT generic — they are literal
+McDonald's-app class names: `mcdonalds`, `Lcom/mcdonalds/mcdcoreapp/common/activity/SplashActivity`,
+`Hilt_SplashActivity`, `McdLauncherActivity`, plus `newrelic` (their analytics). The rest are
+framework/library prefixes (androidx/*, com/google/gson, java/lang/reflect, kotlin/jvm/internal,
+kotlin/Lazy) and `SurfaceControl`. So the ~130-hook machinery is largely another app's baggage that
+noice drags through on every invoke.
+
+### §576 — null the dead McDonald's/NewRelic needle scans (safe, measured)
+noice dex has **0 mcdonalds, 0 newrelic** classes, so those strstr always return null. Replaced
+`bl strstr` -> `mov x0,xzr` (x0=null = strstr's no-match result; the following `cbnz x0,handler`
+falls through identically) at **20 sites** (10 per DoCall template). recipes/patch576.py +
+mcd_sites.json.
+
+MEASURED (on §575 base + §576):
+  strstr CPU share  ~28% -> ~24%
+  library tab       ~5550 -> ~4810 ticks  (~13% faster)   presets ~120 -> ~108
+  app fully works (renders, tab-switches, 6/6 taps), no behavior change.
+
+### Cumulative safe removals so far
+  §575: proxy-invoke + systemTime hooks (redundant via §440/§551/§534)
+  §576: 20 McDonald's/NewRelic dead needle scans
+Deployed baseline libart md5 = dc01de5509ae10a426370f2002b59294.
+
+### Continued path
+The remaining ~17 needles/DoCall (androidx/kotlin/gson/reflect/SurfaceControl) still scan per invoke.
+Audit each: does noice actually need that compat hook, or is it McDonald's behavior that merely
+also matches noice's androidx/kotlin methods (applying the wrong app's shim)? The endgame is either
+(a) a single pre-filter gate at DoCall's `cbz x28` point, or (b) recognizing the whole PFCUT layer is
+the wrong app's and stripping it to only what noice needs (interface-repair is confirmed needed).
+JIT still blocked by the inlined atomics/coroutine path.
