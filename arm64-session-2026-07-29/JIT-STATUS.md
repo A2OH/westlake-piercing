@@ -81,3 +81,24 @@ Binary-patch ART's `ThrowStackOverflowError` (or the switch-interpreter's stack-
 emit a NATIVE backtrace at throw time, BEFORE unwinding — precedent: the §525/§534 style hooks. Or
 enlarge `kStackOverflowReservedBytes` so `getStackTrace()` can walk. Either names the recursing
 Java method; then §570-exclude it or fix the CAS intrinsic under JIT.
+
+
+## 2026-08-08 — MethodEntered hypothesis FALSIFIED
+Hypothesis: the recursion is the per-invoke JIT sampling hook `Jit::MethodEntered` (called from
+`interpreter::Execute` @0xab0644 when jit!=null). Test §573: binary-patched MethodEntered @0x9633c4
+to `ret` (no-op), kept jit!=null, chan=1 launch + tap. **Result: STILL DIES** (SOE=8, multi-thread).
+So the recursion is NOT the sampling counter path. Reverted to pure §571 libart.
+
+Remaining jit!=null-dependent interpreter differences to suspect: `MaybeDoOnStackReplacement` (OSR
+check @0x9602d8, still runs even with MethodEntered no-op'd), or a deeper change in how DoCall
+dispatches when a JIT exists. SOE=8 (several threads) says it hits coroutine workers too, consistent
+with the 0xE0000001 scheduler-ctl CAS clue.
+
+## HONEST ASSESSMENT (after 4 sessions)
+The JIT compiles correctly and needs no rebuild, but ENABLING it makes the interpreter recurse
+unboundedly under real load, on a path that is NOT: compiled-code, nterp, the interface-repair loop,
+headroom, startup sync, or MethodEntered sampling. Each was tested and ruled out. Naming the exact
+recursion now requires a NATIVE backtrace at the stack-overflow point (Java tools show only ~5
+frames because the recursion is largely native C++). That is a disproportionate asm-instrumentation
+effort with uncertain payoff. The concrete performance win (§568, idle 88%->3%) is already banked and
+independent of the JIT.
