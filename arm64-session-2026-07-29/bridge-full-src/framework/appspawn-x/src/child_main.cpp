@@ -68,6 +68,82 @@ namespace appspawnx {
 //
 // ⚠️Env-gated (APPSPAWNX_FORCE_JIT=1) so it is trivially reversible: this calls into ART internals
 // at a point AOSP would not, and a bad interaction must be switchable off without a rebuild.
+
+// §578 headless JIT load test. Runs com.android.internal.os.WlJitBench.bench (pure arithmetic, NO
+// atomics/coroutines/objects) on a dedicated big-stack thread AFTER the JIT is enabled. Purpose:
+// isolate "can the JIT compile AND execute compiled code under sustained load" from noice's own
+// coroutine/atomics path (where it dies on a tap). If this SURVIVES + compiles, the JIT engine works
+// and noice's crash is workload-specific; if it dies, compiled-execution itself is broken.
+// Gated by APPSPAWNX_JIT_BENCH=1. Runs WITHOUT any UI tap so noice stays idle-alive alongside it.
+static void* wl_jit_bench_thread(void*) {
+    JavaVM* vm = nullptr; jsize n = 0;
+    if (JNI_GetCreatedJavaVMs(&vm, 1, &n) != JNI_OK || vm == nullptr || n < 1) {
+        fprintf(stderr, "[JIT-BENCH] no JVM\n"); fflush(stderr); return nullptr;
+    }
+    JNIEnv* e = nullptr;
+    JavaVMAttachArgs aa{JNI_VERSION_1_6, "wl-jit-bench", nullptr};
+    if (vm->AttachCurrentThread(&e, &aa) != JNI_OK || e == nullptr) {
+        fprintf(stderr, "[JIT-BENCH] attach FAILED\n"); fflush(stderr); return nullptr;
+    }
+    jclass cls = e->FindClass("com/android/internal/os/WlJitBench");
+    if (cls == nullptr) { if (e->ExceptionCheck()) e->ExceptionClear();
+        fprintf(stderr, "[JIT-BENCH] FindClass FAILED\n"); fflush(stderr); vm->DetachCurrentThread(); return nullptr; }
+    jmethodID m = e->GetStaticMethodID(cls, "bench", "(II)J");
+    if (m == nullptr) { if (e->ExceptionCheck()) e->ExceptionClear();
+        fprintf(stderr, "[JIT-BENCH] GetStaticMethodID FAILED\n"); fflush(stderr); vm->DetachCurrentThread(); return nullptr; }
+    int rounds = 400, iters = 2000000;
+    if (const char* r = getenv("APPSPAWNX_JIT_BENCH_ROUNDS"); r && *r) rounds = atoi(r);
+    if (const char* it = getenv("APPSPAWNX_JIT_BENCH_ITERS"); it && *it) iters = atoi(it);
+    fprintf(stderr, "[JIT-BENCH] START rounds=%d itersPerRound=%d (run/step/mul should get hot)\n",
+            rounds, iters); fflush(stderr);
+    for (int r = 0; r < rounds; r++) {
+        jlong v = e->CallStaticLongMethod(cls, m, 1, iters);   // one internal run() per round
+        if (e->ExceptionCheck()) {
+            // printStackTrace is a fork-safe noop here, so name the throwable directly.
+            jthrowable ex = e->ExceptionOccurred();
+            e->ExceptionClear();
+            const char* cn = "?"; const char* msg = "?";
+            jstring jmsgs = nullptr;
+            if (ex != nullptr) {
+                jclass exc = e->GetObjectClass(ex);
+                jmethodID gname = e->GetMethodID(e->FindClass("java/lang/Class"), "getName", "()Ljava/lang/String;");
+                jstring jn = exc && gname ? (jstring) e->CallObjectMethod(exc, gname) : nullptr;
+                if (jn) cn = e->GetStringUTFChars(jn, nullptr);
+                jmethodID gmsg = e->GetMethodID(e->FindClass("java/lang/Throwable"), "getMessage", "()Ljava/lang/String;");
+                jmsgs = gmsg ? (jstring) e->CallObjectMethod(ex, gmsg) : nullptr;
+                if (e->ExceptionCheck()) e->ExceptionClear();
+                if (jmsgs) msg = e->GetStringUTFChars(jmsgs, nullptr);
+            }
+            fprintf(stderr, "[JIT-BENCH] EXCEPTION at round %d: %s: %s\n", r, cn, msg);
+            fflush(stderr);
+            vm->DetachCurrentThread(); return nullptr;
+        }
+        if ((r % 40) == 0) { fprintf(stderr, "[JIT-BENCH] round %d checksum=%lld\n", r, (long long) v); fflush(stderr); }
+    }
+    fprintf(stderr, "[JIT-BENCH] DONE all %d rounds — SURVIVED heavy compute load\n", rounds);
+    fflush(stderr);
+    vm->DetachCurrentThread();
+    return nullptr;
+}
+static void wl_jit_bench_start() {
+    const char* v = getenv("APPSPAWNX_JIT_BENCH");
+    if (v == nullptr || strcmp(v, "1") != 0) return;
+    size_t mb = 64;
+    if (const char* s = getenv("APPSPAWNX_JIT_BENCH_STACK_MB"); s && *s) {
+        long m = strtol(s, nullptr, 10); if (m >= 1 && m <= 512) mb = (size_t) m;
+    }
+    pthread_attr_t attr; pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, mb * 1024 * 1024);
+    pthread_t t;
+    if (pthread_create(&t, &attr, wl_jit_bench_thread, nullptr) == 0) {
+        pthread_detach(t);
+        fprintf(stderr, "[JIT-BENCH] thread launched (stack=%zuMB)\n", mb); fflush(stderr);
+    } else {
+        fprintf(stderr, "[JIT-BENCH] pthread_create FAILED\n"); fflush(stderr);
+    }
+    pthread_attr_destroy(&attr);
+}
+
 static void wl_create_jit_after_fork() {
     const char* v = getenv("APPSPAWNX_FORCE_JIT");
     if (v == nullptr || strcmp(v, "1") != 0) return;
@@ -484,9 +560,11 @@ static void wl_name_java_method(void* ctx) {
             usleep((useconds_t)(ms * 1000));
             LOGW("[JIT-560] delay elapsed — enabling JIT now");
             wl_create_jit_after_fork();
+            wl_jit_bench_start();   // §578: headless compute load once JIT is live
         }).detach();
     } else {
         wl_create_jit_after_fork();
+        wl_jit_bench_start();
     }
 
     // 2026-07-09: restart the sigchain re-assert thread in the forked CHILD, now that
