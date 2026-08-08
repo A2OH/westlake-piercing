@@ -1171,15 +1171,20 @@ void ChildMain::launchActivityThread(JNIEnv* env, const SpawnMsg& msg,
                     jclass steClass = env->FindClass("java/lang/StackTraceElement");
                     jmethodID getCls = env->GetMethodID(steClass, "getClassName", "()Ljava/lang/String;");
                     jmethodID getMth = env->GetMethodID(steClass, "getMethodName", "()Ljava/lang/String;");
-                    LOGE("[CHILD_CK]   (stack depth = %d frames, showing %d)", (int) total, (int) n);
+                    // §572: use fprintf(stderr), NOT LOGE. LOGE("%{public}s", ...) DROPS its string
+                    // arguments in this build — every frame logged as a bare "at " with no name, which
+                    // wasted two analysis rounds. stderr is the child log the harness reads anyway.
+                    fprintf(stderr, "[CHILD_CK]   (stack depth = %d frames, showing %d)\n",
+                            (int) total, (int) n);
+                    fflush(stderr);
                     for (jsize i = 0; i < n; ++i) {
                         jobject ste = env->GetObjectArrayElement(frames, i);
                         jstring jc = (jstring) env->CallObjectMethod(ste, getCls);
                         jstring jm = (jstring) env->CallObjectMethod(ste, getMth);
                         const char* cs = jc ? env->GetStringUTFChars(jc, nullptr) : nullptr;
                         const char* ms = jm ? env->GetStringUTFChars(jm, nullptr) : nullptr;
-                        LOGE("[CHILD_CK]   at %{public}s.%{public}s",
-                             cs ? cs : "?", ms ? ms : "?");
+                        fprintf(stderr, "[CHILD_CK]   at %s.%s\n", cs ? cs : "?", ms ? ms : "?");
+                        fflush(stderr);
                         if (cs) env->ReleaseStringUTFChars(jc, cs);
                         if (ms) env->ReleaseStringUTFChars(jm, ms);
                         if (jc) env->DeleteLocalRef(jc);
