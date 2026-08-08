@@ -597,7 +597,20 @@ static void wl_name_java_method(void* ctx) {
         static LaunchCtx ctx{&msg, runtime};   // enclosing fn is static: no `this`
         pthread_attr_t attr;
         pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+        // §565: THIS is the stack ART reports as "stack size 8182KB" when the JIT starts
+        // executing compiled frames -- it is an explicitly-sized pthread, not the process main
+        // thread, which is why -Xss and RLIMIT_STACK (16 MB here) both had no effect.
+        // ★codex's reading is the key one: ART turns the guard-page fault into StackOverflowError
+        // by writing art_quick_throw_stack_overflow into the saved PC, so a CLEAN Java exception is
+        // proof the handler and sigreturn worked -- the overflow is REAL, not spurious. Compiled
+        // frames simply need more stack than the interpreter did.
+        size_t javaStackMb = 8;
+        if (const char* v = getenv("APPSPAWNX_JAVA_STACK_MB"); v && *v) {
+            long m = strtol(v, nullptr, 10);
+            if (m >= 1 && m <= 512) javaStackMb = (size_t)m;
+        }
+        fprintf(stderr, "[CM-BIGSTACK] java thread stack = %zu MB\n", javaStackMb); fflush(stderr);
+        pthread_attr_setstacksize(&attr, javaStackMb * 1024 * 1024);
         pthread_t javaTid;
         int prc = pthread_create(&javaTid, &attr, [](void* a) -> void* {
             auto* c = static_cast<LaunchCtx*>(a);
@@ -1146,17 +1159,31 @@ void ChildMain::launchActivityThread(JNIEnv* env, const SpawnMsg& msg,
                 jobjectArray frames = (jobjectArray)env->CallObjectMethod(thr, getStackTrace);
                 if (env->ExceptionCheck()) env->ExceptionClear();
                 if (frames) {
-                    jsize n = env->GetArrayLength(frames);
-                    if (n > 16) n = 16;
+                    // §569: print class+method DIRECTLY instead of StackTraceElement.toString().
+                    // toString() returns "" on this port, so every frame logged as a bare "at " with
+                    // no text — which read as "the trace is only 5 frames deep" and sent a whole
+                    // analysis round chasing a shallow-stack theory for the JIT's StackOverflowError.
+                    // The frames were there all along; only the formatting was missing.
+                    // Cap raised 16 -> 64: naming a RECURSION needs enough frames to see the repeat.
+                    const jsize total = env->GetArrayLength(frames);
+                    jsize n = total;
+                    if (n > 64) n = 64;
                     jclass steClass = env->FindClass("java/lang/StackTraceElement");
-                    jmethodID toStr = env->GetMethodID(steClass, "toString", "()Ljava/lang/String;");
+                    jmethodID getCls = env->GetMethodID(steClass, "getClassName", "()Ljava/lang/String;");
+                    jmethodID getMth = env->GetMethodID(steClass, "getMethodName", "()Ljava/lang/String;");
+                    LOGE("[CHILD_CK]   (stack depth = %d frames, showing %d)", (int) total, (int) n);
                     for (jsize i = 0; i < n; ++i) {
                         jobject ste = env->GetObjectArrayElement(frames, i);
-                        jstring jStr = (jstring)env->CallObjectMethod(ste, toStr);
-                        const char* s = env->GetStringUTFChars(jStr, nullptr);
-                        LOGE("[CHILD_CK]   at %{public}s", s);
-                        env->ReleaseStringUTFChars(jStr, s);
-                        env->DeleteLocalRef(jStr);
+                        jstring jc = (jstring) env->CallObjectMethod(ste, getCls);
+                        jstring jm = (jstring) env->CallObjectMethod(ste, getMth);
+                        const char* cs = jc ? env->GetStringUTFChars(jc, nullptr) : nullptr;
+                        const char* ms = jm ? env->GetStringUTFChars(jm, nullptr) : nullptr;
+                        LOGE("[CHILD_CK]   at %{public}s.%{public}s",
+                             cs ? cs : "?", ms ? ms : "?");
+                        if (cs) env->ReleaseStringUTFChars(jc, cs);
+                        if (ms) env->ReleaseStringUTFChars(jm, ms);
+                        if (jc) env->DeleteLocalRef(jc);
+                        if (jm) env->DeleteLocalRef(jm);
                         env->DeleteLocalRef(ste);
                     }
                     env->DeleteLocalRef(frames);
