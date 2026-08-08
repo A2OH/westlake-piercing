@@ -63,3 +63,37 @@ also matches noice's androidx/kotlin methods (applying the wrong app's shim)? Th
 (a) a single pre-filter gate at DoCall's `cbz x28` point, or (b) recognizing the whole PFCUT layer is
 the wrong app's and stripping it to only what noice needs (interface-repair is confirmed needed).
 JIT still blocked by the inlined atomics/coroutine path.
+
+## §577 — remove ALL 74 DoCall needles: strstr 28%->2.3%, but a launch-reliability regression
+Goal: strip the entire per-invoke needle classifier, add back only what noice needs. Nulled all 74
+`bl strstr` -> `mov x0,xzr` (recipes/patch577.py + all_needle_sites.json), on the §576 base.
+
+### What the needle chain actually is
+DoCall<false>/<true> run 37 strstr each = a McDonald's-era PACKAGE CLASSIFIER (needles: mcdonalds*,
+newrelic, androidx/*, com/google/gson, java/lang/reflect, kotlin/*, SurfaceControl). The REAL hook
+dispatch (atomics/Unsafe/arraycopy/gson/lifecycle/proxy/interface/charset) lives in DoCallCommon,
+which has its OWN strcmp dispatch and runs INDEPENDENTLY. Proven: with all 74 needles nulled the
+load-bearing hooks still fire (arraycopy/Atomic/Unsafe/PFCUT-IFACE/PFCUT-PROXY/Charset all non-zero).
+
+### Which needle-gated hooks noice actually uses (from the log)
+FIRE: Gson (89), androidx Lifecycle (17), Hilt (15), MethodHandles (7).
+NEVER fire: KotlinReflection, WorkManager, Splash, SavedState, ClassNewInstance,
+ClassGetDeclaredField (0 each) — pure dead weight for noice.
+
+### MEASURED (§577, good launch)
+  strstr CPU share  ~28% -> **~2.3%**  (interpreter now spends its time in ExecuteSwitchImplCpp)
+  render, all 5 tabs, play UI (Unsaved-Preset bar), save FAB: all work; SOE=0; alive.
+
+### ⚠️THE REGRESSION (this is what must be "added back")
+§577 degrades LAUNCH RELIABILITY: 5+5 relaunch attempts failed to get an input channel
+(side-channels never started), then reverting to §576 got chan=1 on the FIRST try on the same board.
+So >=1 of the 54 non-McDonald's needles gates a hook the window/session/adoption path needs. That is
+the concrete "add back for noice" item. (Basic once-good launch worked, so it is a rate regression,
+not a hard break.)
+
+### NEXT (finish the goal)
+Bisect the 54 non-mcd needle sites: null half, measure channel-success rate over ~5 launches;
+narrow to the offending needle(s); re-provide ONLY that hook (cheaply gated) and keep the rest
+removed. Audio also still needs a clean confirm (ExoPlayer engages; audio-out is slow-start ~min).
+
+### Deployed baseline: §576 (dc01de55...) — proven safe, ~13% library-tab win. §577 NOT deployed.
