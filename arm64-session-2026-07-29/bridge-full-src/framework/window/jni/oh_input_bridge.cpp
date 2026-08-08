@@ -1057,6 +1057,101 @@ void wl_dump_view_tree(JNIEnv* env, int rootIdx) {
 // Drive it with:  echo "q q6.b" > /data/local/tmp/noice_tap
 // §437: shared helper — the app ClassLoader via a live decor view.
 static jobject wl_app_class_loader(JNIEnv* env);
+// §570 — mark every method of an app class NON-COMPILABLE, so ART's JIT skips it.
+//
+// Why this exists: with the §568 relayout storm fixed, the JIT compiles real app code and then dies
+// with a StackOverflowError whose FIRST occurrence is on a kotlinx CoroutineScheduler worker (it is
+// swallowed by the no-op ThreadGroup.uncaughtException, so only main's death is visible). The last
+// method compiled before it is kotlin.coroutines.jvm.internal.ContinuationImpl.resumeWith. Compiled
+// code does not go through the interpreter's DoCall, so westlake's §436 interface-dispatch repair —
+// which lives there — is bypassed and the continuation chain recurses. Excluding just those classes
+// keeps the JIT for everything else.
+//
+// The flag was read out of the DEPLOYED binary, not guessed from AOSP source (values move between
+// versions). art::jit::Jit::CompileMethodInternal @0x95f3a0 does:
+//     ldr w8, [x19, #4]        ; ArtMethod::access_flags_  -> offset 4
+//     and w8, w8, #0x82800000  ; kAccIntrinsic|kAccCompileDontBother|kAccPreCompiled
+//     cmp w8, #0x02800000      ; IsPreCompiled(): DontBother|PreCompiled set, Intrinsic clear
+// so kAccCompileDontBother = 0x02000000. Set it ALONE — setting 0x00800000 too would make the
+// method look pre-compiled instead of skipped.
+//
+// ★jmethodID IS the ArtMethod* in ART, so FromReflectedMethod gives the pointer directly; no need
+// to reach for the private Executable.artMethod field.
+static const uint32_t kWlAccCompileDontBother = 0x02000000u;
+
+void wl_jit_exclude_class(JNIEnv* env, const char* dotted);
+void wl_jit_exclude_class(JNIEnv* env, const char* dotted) {
+    // Same app-ClassLoader route as §433 below: reach a live decor view and ask its Context.
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    jmethodID getInst = wmgCls ? env->GetStaticMethodID(wmgCls, "getInstance",
+        "()Landroid/view/WindowManagerGlobal;") : nullptr;
+    jobject wmg = getInst ? env->CallStaticObjectMethod(wmgCls, getInst) : nullptr;
+    if (wmg == nullptr) { if (env->ExceptionCheck()) env->ExceptionClear();
+                          LOGE("[JIT-570] no WindowManagerGlobal"); return; }
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = mRootsF ? env->GetObjectField(wmg, mRootsF) : nullptr;
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+    jclass viewCls = env->FindClass("android/view/View");
+    jmethodID getCtx = env->GetMethodID(viewCls, "getContext", "()Landroid/content/Context;");
+    jobject loader = nullptr;
+    const jint nn = roots ? env->CallIntMethod(roots, sizeM) : 0;
+    for (jint i = 0; i < nn && loader == nullptr; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (!vri) continue;
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (view) {
+            jobject ctx = env->CallObjectMethod(view, getCtx);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (ctx) {
+                jclass ctxCls = env->FindClass("android/content/Context");
+                jmethodID getCL = env->GetMethodID(ctxCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+                loader = getCL ? env->CallObjectMethod(ctx, getCL) : nullptr;
+                if (env->ExceptionCheck()) { env->ExceptionClear(); loader = nullptr; }
+                env->DeleteLocalRef(ctx);
+            }
+            env->DeleteLocalRef(view);
+        }
+        env->DeleteLocalRef(vri);
+    }
+    if (loader == nullptr) { LOGE("[JIT-570] no app ClassLoader"); return; }
+
+    jclass clCls = env->FindClass("java/lang/ClassLoader");
+    jmethodID loadClassM = env->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring jn = env->NewStringUTF(dotted);
+    jobject klass = env->CallObjectMethod(loader, loadClassM, jn);
+    if (klass == nullptr || env->ExceptionCheck()) {
+        env->ExceptionClear();
+        LOGE("[JIT-570] loadClass(%{public}s) FAILED — not excluded", dotted);
+        return;
+    }
+    jclass classCls = env->FindClass("java/lang/Class");
+    jmethodID getDeclM = env->GetMethodID(classCls, "getDeclaredMethods", "()[Ljava/lang/reflect/Method;");
+    jobjectArray ms = getDeclM ? (jobjectArray) env->CallObjectMethod(klass, getDeclM) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); ms = nullptr; }
+    if (ms == nullptr) { LOGE("[JIT-570] getDeclaredMethods(%{public}s) failed", dotted); return; }
+
+    const jsize mn = env->GetArrayLength(ms);
+    int marked = 0, already = 0;
+    for (jsize i = 0; i < mn; ++i) {
+        jobject m = env->GetObjectArrayElement(ms, i);
+        if (m == nullptr) continue;
+        jmethodID mid = env->FromReflectedMethod(m);      // == ArtMethod*
+        if (mid != nullptr) {
+            uint32_t* af = reinterpret_cast<uint32_t*>(reinterpret_cast<char*>(mid) + 4);
+            if ((*af & kWlAccCompileDontBother) != 0) { ++already; }
+            else { *af |= kWlAccCompileDontBother; ++marked; }
+        }
+        env->DeleteLocalRef(m);
+    }
+    env->DeleteLocalRef(ms);
+    LOGE("[JIT-570] %{public}s: %d method(s) marked non-compilable (%d already), of %d",
+         dotted, marked, already, (int) mn);
+}
+
 void wl_inspect_app_class(JNIEnv* env, const char* dotted);
 void wl_inspect_app_class(JNIEnv* env, const char* dotted) {
     jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
@@ -2595,6 +2690,25 @@ void OHInputBridge::startTapControlChannel() {
                         if (vm->AttachCurrentThread(&denv, &aa) == JNI_OK) det = true; else denv = nullptr;
                     }
                     if (denv) { wl_proxy_probe(denv, cls); if (det) vm->DetachCurrentThread(); }
+                }
+                continue;
+            }
+            // §570: mark an app class's methods non-compilable so the JIT skips them.
+            //   echo "J kotlin.coroutines.jvm.internal.ContinuationImpl" > /data/local/tmp/noice_tap
+            // Must run BEFORE the JIT goes live (APPSPAWNX_JIT_DELAY_MS leaves a window for it) —
+            // a method already compiled keeps its compiled entry point.
+            if (buf[0] == 'J') {
+                char cls[192] = {0};
+                if (sscanf(buf + 1, "%191s", cls) != 1) { FILE* wj = fopen(path, "w"); if (wj) fclose(wj); continue; }
+                FILE* wj = fopen(path, "w"); if (wj) fclose(wj);
+                JNIEnv* denv = nullptr; bool det = false;
+                JavaVM* vm = OHInputBridge::getInstance().javaVm();
+                if (vm != nullptr) {
+                    if (vm->GetEnv(reinterpret_cast<void**>(&denv), JNI_VERSION_1_6) != JNI_OK) {
+                        JavaVMAttachArgs aa{JNI_VERSION_1_6, "oh-jit-exclude", nullptr};
+                        if (vm->AttachCurrentThread(&denv, &aa) == JNI_OK) det = true; else denv = nullptr;
+                    }
+                    if (denv) { wl_jit_exclude_class(denv, cls); if (det) vm->DetachCurrentThread(); }
                 }
                 continue;
             }
