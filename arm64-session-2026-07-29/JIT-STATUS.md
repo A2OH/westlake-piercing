@@ -102,3 +102,17 @@ recursion now requires a NATIVE backtrace at the stack-overflow point (Java tool
 frames because the recursion is largely native C++). That is a disproportionate asm-instrumentation
 effort with uncertain payoff. The concrete performance win (§568, idle 88%->3%) is already banked and
 independent of the JIT.
+
+
+## 2026-08-08 (cont) — OSR hypothesis ALSO FALSIFIED
+§574: no-op'd Jit::MaybeDoOnStackReplacement @0x9602d8 (the OSR hook, called from ~10
+switch-interpreter backward-branch sites), sampling left intact. chan=1 + tap => STILL DIES
+(SOE=1, compiled=0). Reverted to §571.
+
+So BOTH jit!=null interpreter hooks — MethodEntered (§573) AND OSR (§574) — no-op'd, and the tap
+still recurses. **The trigger is not in the interpreter's JIT hooks.** It is something more passive
+that flips when runtime->jit_ becomes non-null (a UseJitCompilation()-gated check on the hot path,
+an entrypoint/trampoline installed by CreateJit, or ProfilingInfo allocation outside MethodEntered).
+
+Remaining diagnostic: ONLY a native backtrace at the overflow will name it (Java tools show ~5
+frames; the recursion is native C++). Everything cheaper has been exhausted.
