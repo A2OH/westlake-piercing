@@ -78,3 +78,23 @@ Binary-patch/trampoline it to log SP, LR (caller), and Thread::stack_end at thro
 the exact check (implicit fault handler vs explicit invoke-path check) and the limit it used. Then
 correct THAT limit/path. The headless bench is the deterministic reproducer (round 0 OK, round 1
 throws) — no noice, no lottery.
+
+## ★DECISIVE: OSR entry works, normal prologue entry fails => the PROLOGUE PROBE is the trigger
+round 0 returns a correct checksum because run() is entered INTERPRETED and then OSR-compiled: OSR
+jumps INTO the compiled body mid-loop and SKIPS the prologue. round 1 calls the now-compiled run()
+via its NORMAL entry, which runs the prologue (`sub x16,sp,#0x2000; ldr wzr,[x16]`) and throws SOE.
+Same compiled code, same thread, same stack — the ONLY difference is whether the prologue runs.
+=> The prologue stack-overflow check is the trigger, full stop. (The geometry "it can't fault"
+paradox is unresolved — likely ART's fault-handler guard-region bookkeeping misclassifies the probe
+address as an overflow, or stack_end used by the handler differs from the mapped stack — but the
+OSR-vs-normal split proves the prologue is where it dies.)
+
+## FIX DIRECTION (concrete)
+The probe is emitted by the JIT codegen frame-entry (CodeGeneratorARM64::GenerateFrameEntry /
+GenerateStackOverflowCheck). Options, in order:
+ 1. Binary-patch that codegen path so JIT-compiled prologues either skip the probe or use a correct
+    limit (one libart patch fixes ALL compiled methods; precedent: §534/§551 code-cave patches).
+ 2. Or fix ART's fault-handler guard-region / stack_end bookkeeping so the probe address is not
+    misclassified as overflow.
+Reproduce/verify with the headless bench (round 0 OK, round 1 SOE). Instrument ThrowStackOverflow
+Error @0x8574e8 (log LR) only if needed to choose between 1 and 2.
