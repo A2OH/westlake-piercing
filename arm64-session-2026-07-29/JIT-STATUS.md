@@ -51,3 +51,33 @@ The failure is under load and involves the coroutine path. Options: package-pref
 §570 over the loaded-class list, or find why compiled coroutine dispatch recurses (the §436
 interface-dispatch repair lives in the interpreter's DoCall and compiled code bypasses it).
 Use scripts/host/bench.sh — it refuses to produce numbers from a launch with no input channel.
+
+
+## 2026-08-07 (session 4) — fully characterized, still open
+
+Reproduced deterministically: **chan=1 launch + JIT live + ONE tab tap => unbounded recursion,
+child dies.** Ruled out, with evidence:
+* NOT compiled code — `compiled=0` at death (JIT compiled nothing; the tap path is interpreted).
+* NOT nterp — `CanRuntimeUseNterp` is `mov w0,wzr; ret` (hard-off), nterp never runs.
+* NOT the §436 interface-repair loop — no PFCUT-IFACE/PROXY logging at death.
+* NOT per-frame overhead / headroom — `stack size 63MB` on a 64MB stack = the WHOLE stack is
+  consumed => genuinely unbounded. Bigger stack only delays (8MB, 64MB, 256MB all die).
+* NOT startup sync — JIT live at 20s with no tap SURVIVES; only the TAP path triggers it.
+* NOT the JIT env breaking launch — 2/3 JIT-env launches got a channel (it's the normal lottery).
+
+The recursion is **silent interpreted method invocation** (no per-invoke logging). The last
+intrinsic logged before every death is
+    [PFCUT] AtomicInteger.compareAndSet intrinsic current=-536870911   (0xE0000001)
+i.e. a j.u.c/Kotlin CAS retry that appears never to converge with the JIT on — a concrete lead.
+
+### Why it's hard to see
+`getStackTrace()` returns 0 usable frames because the 63MB overflow leaves no room to walk the
+stack; the §569/§572 dumper then prints only the 5-frame secondary trip (Arrays.copyOf /
+StringBuilder.append during initChild's Looper). The frame COUNT is real; the deep frames never
+survive.
+
+### NEXT (the only reliable way to name it)
+Binary-patch ART's `ThrowStackOverflowError` (or the switch-interpreter's stack-overflow check) to
+emit a NATIVE backtrace at throw time, BEFORE unwinding — precedent: the §525/§534 style hooks. Or
+enlarge `kStackOverflowReservedBytes` so `getStackTrace()` can walk. Either names the recursing
+Java method; then §570-exclude it or fix the CAS intrinsic under JIT.

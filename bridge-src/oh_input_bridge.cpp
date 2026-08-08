@@ -1148,8 +1148,10 @@ void wl_jit_exclude_class(JNIEnv* env, const char* dotted) {
         env->DeleteLocalRef(m);
     }
     env->DeleteLocalRef(ms);
-    LOGE("[JIT-570] %{public}s: %d method(s) marked non-compilable (%d already), of %d",
-         dotted, marked, already, (int) mn);
+    // §572: fprintf(stderr) — LOGE drops %{public}s args in this build (logged empty before).
+    fprintf(stderr, "[JIT-570] %s: %d method(s) marked non-compilable (%d already), of %d\n",
+            dotted, marked, already, (int) mn);
+    fflush(stderr);
 }
 
 void wl_inspect_app_class(JNIEnv* env, const char* dotted);
