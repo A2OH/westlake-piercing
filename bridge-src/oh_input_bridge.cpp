@@ -35,6 +35,10 @@
 #include "key_event.h"
 #include "pointer_event.h"
 
+// WESTLAKE §408: injected-input window selector (see wl_dump_view_roots below).
+static std::atomic<int> g_rootIndex{-1};
+void wl_set_root_index(int idx) { g_rootIndex.store(idx); }
+
 #define LOG_TAG "OH_InputBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -230,6 +234,11 @@ static int32_t ohKeyCodeToAndroid(int32_t oh) {
 
 namespace oh_adapter {
 
+// §414: forward declarations so the key path (defined above the helpers) can use them.
+static bool wl_report_exception(JNIEnv* env, const char* where);
+static void wl_ensure_looper(JNIEnv* env);
+
+
 OHInputBridge& OHInputBridge::getInstance() {
     static OHInputBridge instance;
     return instance;
@@ -361,12 +370,13 @@ int32_t OHInputBridge::dispatchKeyViaViewRoot(int32_t action, int32_t keyCode,
         needDetach = true;
     }
     auto fail = [&](const char* why) -> int32_t {
-        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        wl_report_exception(env, "dispatchKeyViaViewRoot");   // §414: ExceptionDescribe is a no-op here
         LOGE("dispatchKeyViaViewRoot: %s", why);
         if (needDetach) jvm_->DetachCurrentThread();
         return -1;
     };
 
+    wl_ensure_looper(env);   // §414: key handlers animate too (same trap as §411)
     // --- 1. KeyEvent(downMs, evtMs, action, code, repeat, meta, devId, scan, flags, source) ---
     jclass keCls = env->FindClass("android/view/KeyEvent");
     if (!keCls || env->ExceptionCheck()) return fail("FindClass KeyEvent");
@@ -374,6 +384,16 @@ int32_t OHInputBridge::dispatchKeyViaViewRoot(int32_t action, int32_t keyCode,
     if (!keCtor || env->ExceptionCheck()) return fail("KeyEvent ctor");
     jlong downMs = downTimeNs / 1000000LL;
     jlong evtMs  = eventTimeNs / 1000000LL;
+    if (downMs == 0 || evtMs == 0) {   // §414: the side-channel passes 0; use real uptime
+        jclass scCls = env->FindClass("android/os/SystemClock");
+        jmethodID upmM = scCls ? env->GetStaticMethodID(scCls, "uptimeMillis", "()J") : nullptr;
+        if (upmM != nullptr) {
+            const jlong now = env->CallStaticLongMethod(scCls, upmM);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (downMs == 0) downMs = now;
+            if (evtMs == 0) evtMs = now;
+        }
+    }
     jobject keyEvent = env->NewObject(
         keCls, keCtor, downMs, evtMs, (jint)action, (jint)keyCode,
         (jint)0 /*repeat*/, (jint)metaState, (jint)-1 /*deviceId=VIRTUAL*/,
@@ -409,30 +429,117 @@ int32_t OHInputBridge::dispatchKeyViaViewRoot(int32_t action, int32_t keyCode,
 
     jobject receiver = nullptr;   // chosen WindowInputEventReceiver
     jobject fallbackRecv = nullptr;
+    // WESTLAKE §405: also keep the owning ViewRootImpl — adapter/window/InputEventBridge is a BCP
+    // class that is NOT deployed on this board, so without a fallback every key (notably BACK, which
+    // is how you leave a detail page) failed at "FindClass InputEventBridge".
+    // ViewRootImpl.enqueueInputEvent(InputEvent) is public and hops to the UI thread by itself.
+    jobject vriMatch = nullptr, vriFallback = nullptr;
+    jobject decorView = nullptr, fallbackView = nullptr;
+    int chosenRootK = -1, fallbackIdxK = -1;   // §552: report WHICH window got the key
     for (jint i = 0; i < n; ++i) {
         jobject vri = env->CallObjectMethod(roots, getM, i);
         if (!vri) continue;
         jobject recv = env->GetObjectField(vri, recvF);
         jobject view = env->GetObjectField(vri, mViewF);
-        if (recv && view) {
-            jboolean focused = env->CallBooleanMethod(view, hasFocusM);
+        if (view) {
+            const int wantK = g_rootIndex.load();          // §408
+            jboolean focused;
+            if (wantK >= 0) { focused = (i == wantK) ? JNI_TRUE : JNI_FALSE; }
+            else {
+                focused = env->CallBooleanMethod(view, hasFocusM);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); focused = JNI_FALSE; }
+                if (!focused) {
+                    jmethodID shownM = env->GetMethodID(viewCls, "isShown", "()Z");
+                    if (shownM) focused = env->CallBooleanMethod(view, shownM);
+                    if (env->ExceptionCheck()) { env->ExceptionClear(); focused = JNI_FALSE; }
+                }
+            }
             if (focused) {
-                receiver = env->NewLocalRef(recv);  // keep
-            } else if (!fallbackRecv) {
-                fallbackRecv = env->NewLocalRef(recv);  // topmost-ish fallback
+                // WESTLAKE §552: keep the LAST match, not the first — the same rule the TOUCH path
+                // already follows (§460). mRoots APPENDS, so a dialog is always a later entry than
+                // the Activity beneath it, and the Activity's DecorView still reports isShown()==true.
+                // Breaking on the first match sent every KEY to the Activity window, which is why
+                // typing into a dialog's EditText did nothing and logged
+                //     dispatchKeyViaViewRoot: ... DecorView.dispatchKeyEvent handled=0
+                // while the touch that focused that very field had correctly gone to root[1].
+                if (receiver)  env->DeleteLocalRef(receiver);
+                if (vriMatch)  env->DeleteGlobalRef(vriMatch);
+                if (decorView) env->DeleteGlobalRef(decorView);
+                receiver  = recv ? env->NewLocalRef(recv) : nullptr;
+                vriMatch  = env->NewGlobalRef(vri);
+                decorView = env->NewGlobalRef(view);
+                chosenRootK = (int)i;
+            } else if (!vriFallback) {
+                if (recv && !fallbackRecv) fallbackRecv = env->NewLocalRef(recv);
+                vriFallback = env->NewGlobalRef(vri);
+                fallbackView = env->NewGlobalRef(view);
+                fallbackIdxK = (int)i;
             }
         }
         if (recv) env->DeleteLocalRef(recv);
         if (view) env->DeleteLocalRef(view);
         env->DeleteLocalRef(vri);
-        if (receiver) break;
+        // §552: no early break — we want the LAST matching root (topmost window).
     }
-    if (!receiver) receiver = fallbackRecv;   // no focused window → best effort
-    if (!receiver) { env->DeleteLocalRef(keyEvent); return fail("no ViewRootImpl receiver"); }
+    if (!receiver) receiver = fallbackRecv;   // no focused window -> best effort
+    if (!vriMatch) { vriMatch = vriFallback; chosenRootK = fallbackIdxK; }
+    if (!decorView) decorView = fallbackView;
+    if (!receiver && !vriMatch && !decorView) { env->DeleteLocalRef(keyEvent); return fail("no ViewRootImpl receiver"); }
+    // §552: name the window, for the same reason §460 added it to the touch path — "handled=0" from
+    // the wrong root reads exactly like a broken widget.
+    LOGI("dispatchKeyViaViewRoot: chose root[%d] of %d (g_rootIndex=%d)",
+         chosenRootK, (int)n, g_rootIndex.load());
 
-    // --- 3. dispatchOnMainThread(receiver, seq, keyEvent) ---
+    // --- 3a. preferred: DecorView.dispatchKeyEvent (§405b) ---
+    // Same reasoning as the touch path: enqueueInputEvent runs the event through ViewRootImpl's
+    // input stages, and on this board those reach services that do not exist (autofill ->
+    // UserManager) and kill the process.  DecorView.dispatchKeyEvent goes straight to the Window
+    // callback (the Activity), which is what BACK actually needs.
+    // §556: a KEY-ONLY switch. WL_TOUCH_ENQUEUE flips touch as well, and touch currently works
+    // (§554), so testing the ViewRootImpl route for keys must not disturb it.
+    static const bool wl_keyEnqueue = (getenv("WL_TOUCH_ENQUEUE") != nullptr) ||
+                                      (getenv("WL_KEY_ENQUEUE") != nullptr);
+    if (decorView != nullptr && !wl_keyEnqueue) {
+        jmethodID dkeM = env->GetMethodID(viewCls, "dispatchKeyEvent",   // §408c
+            "(Landroid/view/KeyEvent;)Z");
+        if (!dkeM || env->ExceptionCheck()) { env->ExceptionClear(); dkeM = nullptr; }
+        if (dkeM != nullptr) {
+            jboolean handled = env->CallBooleanMethod(decorView, dkeM, keyEvent);
+            if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+            else {
+                LOGI("dispatchKeyViaViewRoot: action=%d keyCode=%d -> DecorView.dispatchKeyEvent handled=%d",
+                     action, keyCode, (int)handled);
+                env->DeleteLocalRef(keyEvent);
+                if (decorView) env->DeleteGlobalRef(decorView);   // §406b
+                if (vriMatch)  env->DeleteGlobalRef(vriMatch);
+                if (needDetach) jvm_->DetachCurrentThread();
+                return 0;
+            }
+        }
+    }
+
+    // --- 3b. ViewRootImpl.enqueueInputEvent (no BCP helper needed) ---
+    if (vriMatch != nullptr) {
+        jmethodID enqueueM = env->GetMethodID(vriCls, "enqueueInputEvent",
+            "(Landroid/view/InputEvent;)V");
+        if (!enqueueM || env->ExceptionCheck()) { env->ExceptionClear(); enqueueM = nullptr; }
+        if (enqueueM != nullptr) {
+            env->CallVoidMethod(vriMatch, enqueueM, keyEvent);
+            if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+            else {
+                LOGI("dispatchKeyViaViewRoot: action=%d keyCode=%d -> enqueueInputEvent OK",
+                     action, keyCode);
+                env->DeleteLocalRef(keyEvent);
+                if (needDetach) jvm_->DetachCurrentThread();
+                return 0;
+            }
+        }
+    }
+
+    // --- 3c. dispatchOnMainThread(receiver, seq, keyEvent) ---
+    if (!receiver) { env->DeleteLocalRef(keyEvent); return fail("no ViewRootImpl receiver"); }
     jclass iebCls = env->FindClass("adapter/window/InputEventBridge");
-    if (!iebCls || env->ExceptionCheck()) return fail("FindClass InputEventBridge");
+    if (!iebCls || env->ExceptionCheck()) { env->ExceptionClear(); return fail("FindClass InputEventBridge"); }
     jmethodID domt = env->GetStaticMethodID(iebCls, "dispatchOnMainThread",
         "(Landroid/view/InputEventReceiver;ILandroid/view/InputEvent;)V");
     if (!domt || env->ExceptionCheck()) return fail("dispatchOnMainThread id");
@@ -506,24 +613,53 @@ int32_t OHInputBridge::dispatchCharactersViaViewRoot(const char* utf8) {
                         "Landroid/view/ViewRootImpl$WindowInputEventReceiver;");
     jclass viewCls = env->FindClass("android/view/View");
     jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
+    // WESTLAKE §552: THIS is the function that types (the per-key `tapKey` path below it is only a
+    // fallback that never runs, because this one reports success). It used to pick the FIRST root
+    // whose view returns hasWindowFocus(), and otherwise the FIRST root of all — which on this port
+    // is always the Activity, never the dialog stacked on top of it. So typing into a dialog's
+    // EditText dispatched to the wrong window and logged a cheerful "-> ViewRootImpl OK" while
+    // nothing changed. Same defect the TOUCH path already fixed in §460, and the same cure:
+    // honour an explicit g_rootIndex, accept isShown() as well as focus, and keep the LAST match
+    // (mRoots APPENDS, so the topmost window is the last entry).
     jobject receiver = nullptr, fallbackRecv = nullptr;
+    int chosenRootC = -1, fallbackIdxC = -1;
     for (jint i = 0; i < n; ++i) {
         jobject vri = env->CallObjectMethod(roots, getM, i);
         if (!vri) continue;
         jobject recv = env->GetObjectField(vri, recvF);
         jobject view = env->GetObjectField(vri, mViewF);
         if (recv && view) {
-            jboolean focused = env->CallBooleanMethod(view, hasFocusM);
-            if (focused) receiver = env->NewLocalRef(recv);
-            else if (!fallbackRecv) fallbackRecv = env->NewLocalRef(recv);
+            const int wantC = g_rootIndex.load();
+            jboolean focused;
+            if (wantC >= 0) {
+                focused = (i == wantC) ? JNI_TRUE : JNI_FALSE;
+            } else {
+                focused = env->CallBooleanMethod(view, hasFocusM);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); focused = JNI_FALSE; }
+                if (!focused) {
+                    jmethodID shownM = env->GetMethodID(viewCls, "isShown", "()Z");
+                    if (shownM) focused = env->CallBooleanMethod(view, shownM);
+                    if (env->ExceptionCheck()) { env->ExceptionClear(); focused = JNI_FALSE; }
+                }
+            }
+            if (focused) {
+                if (receiver) env->DeleteLocalRef(receiver);
+                receiver = env->NewLocalRef(recv);
+                chosenRootC = (int)i;
+            } else if (!fallbackRecv) {
+                fallbackRecv = env->NewLocalRef(recv);
+                fallbackIdxC = (int)i;
+            }
         }
         if (recv) env->DeleteLocalRef(recv);
         if (view) env->DeleteLocalRef(view);
         env->DeleteLocalRef(vri);
-        if (receiver) break;
+        // §552: no early break — keep the LAST match.
     }
-    if (!receiver) receiver = fallbackRecv;
+    if (!receiver) { receiver = fallbackRecv; chosenRootC = fallbackIdxC; }
     if (!receiver) { env->DeleteLocalRef(keyEvent); return fail("no ViewRootImpl receiver"); }
+    LOGI("dispatchCharactersViaViewRoot: chose root[%d] of %d (g_rootIndex=%d)",
+         chosenRootC, (int)n, g_rootIndex.load());
 
     jclass iebCls = env->FindClass("adapter/window/InputEventBridge");
     jmethodID domt = env->GetStaticMethodID(iebCls, "dispatchOnMainThread",
@@ -595,6 +731,814 @@ static void ensureVelocityTrackerStub(JNIEnv* env) {
 // exception left set). `viewCls` is android/view/View (already resolved by the
 // caller); `decorView` is the focused decor View used to reach its classloader.
 // ============================================================
+// ============================================================
+// WESTLAKE §408 — window (ViewRootImpl) selection for injected input
+// ============================================================
+// noice keeps SEVERAL windows alive at once (MainActivity + AppIntroActivity + popups), and none of
+// them holds real WMS focus on this board, so `hasWindowFocus()` picks nothing and the scan falls
+// back to mRoots[0] — which is often NOT the window that is actually on screen.  Injected taps then
+// land in an invisible window and nothing happens (the app survives, the UI just never changes).
+// g_rootIndex lets the side-channel aim at a specific window; -1 keeps the old auto behaviour.
+
+// Log every ViewRootImpl: index, decor-view class, size, focus flag and window title, so the
+// harness can see which window is which before aiming at one.
+void wl_dump_view_roots(JNIEnv* env);
+void wl_dump_view_roots(JNIEnv* env) {
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    if (!wmgCls || env->ExceptionCheck()) { env->ExceptionClear(); LOGE("dumpViewRoots: no WMG"); return; }
+    jmethodID getInst = env->GetStaticMethodID(wmgCls, "getInstance", "()Landroid/view/WindowManagerGlobal;");
+    jobject wmg = env->CallStaticObjectMethod(wmgCls, getInst);
+    if (!wmg || env->ExceptionCheck()) { env->ExceptionClear(); return; }
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = env->GetObjectField(wmg, mRootsF);
+    if (!roots) return;
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jint nn = env->CallIntMethod(roots, sizeM);
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+    jclass viewCls = env->FindClass("android/view/View");
+    jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
+    jmethodID getWM = env->GetMethodID(viewCls, "getMeasuredWidth", "()I");
+    jmethodID getHM = env->GetMethodID(viewCls, "getMeasuredHeight", "()I");
+    jmethodID isShownM = env->GetMethodID(viewCls, "isShown", "()Z");
+    jmethodID getVisM = env->GetMethodID(viewCls, "getVisibility", "()I");
+    jclass clsCls = env->FindClass("java/lang/Class");
+    jmethodID getNameM = env->GetMethodID(clsCls, "getName", "()Ljava/lang/String;");
+    LOGI("dumpViewRoots: %d root(s)", (int)nn);
+    for (jint i = 0; i < nn; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
+        if (!vri) continue;
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); env->DeleteLocalRef(vri); continue; }
+        const char* cn = nullptr; jstring jn = nullptr;
+        jint w = -1, h = -1, vis = -1; jboolean foc = JNI_FALSE, shown = JNI_FALSE;
+        if (view) {
+            jclass vc = env->GetObjectClass(view);
+            jn = vc ? static_cast<jstring>(env->CallObjectMethod(vc, getNameM)) : nullptr;
+            cn = jn ? env->GetStringUTFChars(jn, nullptr) : nullptr;
+            foc = env->CallBooleanMethod(view, hasFocusM);
+            w = env->CallIntMethod(view, getWM);
+            h = env->CallIntMethod(view, getHM);
+            shown = env->CallBooleanMethod(view, isShownM);
+            vis = env->CallIntMethod(view, getVisM);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+        }
+        LOGI("  root[%d] view=%s %dx%d focus=%d shown=%d vis=%d",
+             (int)i, cn ? cn : "(null)", (int)w, (int)h, (int)foc, (int)shown, (int)vis);
+        if (jn && cn) env->ReleaseStringUTFChars(jn, cn);
+        if (view) env->DeleteLocalRef(view);
+        env->DeleteLocalRef(vri);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+// WESTLAKE §411: give the injector thread a Looper.
+// Material widgets start a ripple/state ValueAnimator from onTouchEvent, and ValueAnimator.start()
+// begins with `if (Looper.myLooper() == null) throw new AndroidRuntimeException("Animators may only
+// be run on Looper threads")`.  Thrown from our dispatch thread that exception unwinds the whole
+// dispatch, so the DOWN never reaches the button and every tap reported handled=0.
+// We only need myLooper() to be non-null; we never run the loop, so the animation simply does not
+// advance — the click itself proceeds normally.
+static void wl_ensure_looper(JNIEnv* env) {
+    jclass loopCls = env->FindClass("android/os/Looper");
+    if (!loopCls || env->ExceptionCheck()) { env->ExceptionClear(); return; }
+    jmethodID myLooper = env->GetStaticMethodID(loopCls, "myLooper", "()Landroid/os/Looper;");
+    if (!myLooper || env->ExceptionCheck()) { env->ExceptionClear(); return; }
+    jobject lp = env->CallStaticObjectMethod(loopCls, myLooper);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+    if (lp != nullptr) { env->DeleteLocalRef(lp); return; }
+    jmethodID prep = env->GetStaticMethodID(loopCls, "prepare", "()V");
+    if (prep != nullptr) {
+        env->CallStaticVoidMethod(loopCls, prep);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); }
+        else { LOGI("wl_ensure_looper: Looper.prepare() on injector thread"); }
+    }
+    env->DeleteLocalRef(loopCls);
+}
+
+// WESTLAKE §410: report a pending Java exception AS TEXT.
+// env->ExceptionDescribe() prints nothing in this runtime — Throwable.printStackTrace is a
+// fork-safe no-op ("[RT] Throwable.printStackTrace (fork-safe noop)"), so an exception thrown
+// inside a dispatched touch was indistinguishable from "the view tree ignored it" (handled=0).
+static bool wl_report_exception(JNIEnv* env, const char* where) {
+    if (!env->ExceptionCheck()) return false;
+    jthrowable exc = env->ExceptionOccurred();
+    env->ExceptionClear();
+    if (exc == nullptr) { LOGE("%s: exception (undescribable)", where); return true; }
+    jclass thCls = env->GetObjectClass(exc);
+    jmethodID toStr = thCls ? env->GetMethodID(thCls, "toString", "()Ljava/lang/String;") : nullptr;
+    jstring js = toStr ? static_cast<jstring>(env->CallObjectMethod(exc, toStr)) : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    const char* cs = js ? env->GetStringUTFChars(js, nullptr) : nullptr;
+    LOGE("%s: EXCEPTION %s", where, cs ? cs : "(no message)");
+    // one frame of context is usually enough to name the culprit
+    jmethodID getST = thCls ? env->GetMethodID(thCls, "getStackTrace",
+        "()[Ljava/lang/StackTraceElement;") : nullptr;
+    jobjectArray st = getST ? static_cast<jobjectArray>(env->CallObjectMethod(exc, getST)) : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (st != nullptr) {
+        const jsize n = env->GetArrayLength(st);
+        jclass steCls = env->FindClass("java/lang/StackTraceElement");
+        jmethodID steStr = steCls ? env->GetMethodID(steCls, "toString", "()Ljava/lang/String;") : nullptr;
+        for (jsize i = 0; i < n && i < 12; ++i) {
+            jobject e = env->GetObjectArrayElement(st, i);
+            if (!e) continue;
+            jstring es = steStr ? static_cast<jstring>(env->CallObjectMethod(e, steStr)) : nullptr;
+            const char* ec = es ? env->GetStringUTFChars(es, nullptr) : nullptr;
+            LOGE("    at %s", ec ? ec : "?");
+            if (es && ec) env->ReleaseStringUTFChars(es, ec);
+            if (es) env->DeleteLocalRef(es);
+            env->DeleteLocalRef(e);
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+    if (js && cs) env->ReleaseStringUTFChars(js, cs);
+    return true;
+}
+
+// ============================================================
+// WESTLAKE §409 — dump the live view hierarchy of a window
+// ============================================================
+// "Tap every widget on every page" needs a map of what is actually on screen: this walks a window's
+// DecorView and prints, per view, its class, resource-entry name, absolute on-screen rect, its text
+// (TextView/Button) and its clickable/visible flags.  Coordinates are accumulated on the way down
+// (parentX + getLeft() - parent.getScrollX()) rather than by calling getLocationOnScreen(), which
+// allocates and re-enters the view from this injector thread.
+// ALL method IDs are resolved on framework classes found via FindClass — never on a receiver's own
+// class, because GetMethodID on e.g. DecorView drives ClassLinker::EnsureInitialized from this
+// thread and that SEGVs in mirror::Class::GetDescriptor (§408c).
+struct WlViewDumpCtx {
+    jclass viewCls, vgCls, tvCls, clsCls, resCls;
+    jmethodID getName, getId, getVis, isClickable, getW, getH, getLeft, getTop,
+              getScrollX, getScrollY, getChildCount, getChildAt, getText, toString,
+              getResources, getResourceEntryName, isEnabled,
+              // §555: focus diagnostics — a tap that lands but never focuses looks identical to a
+              // tap that missed, and that ambiguity is what made the text-input bug unreadable.
+              isFocused, isFocusableInTouchMode, isInTouchMode;
+};
+static void wl_dump_view(JNIEnv* env, WlViewDumpCtx& c, jobject v, int px, int py, int depth,
+                         jobject resources) {
+    if (v == nullptr || depth > 24) return;
+    const jint left = env->CallIntMethod(v, c.getLeft);
+    const jint top  = env->CallIntMethod(v, c.getTop);
+    const jint w    = env->CallIntMethod(v, c.getW);
+    const jint h    = env->CallIntMethod(v, c.getH);
+    const jint vis  = env->CallIntMethod(v, c.getVis);
+    const jboolean clk = env->CallBooleanMethod(v, c.isClickable);
+    const jboolean en  = env->CallBooleanMethod(v, c.isEnabled);
+    const jboolean foc = c.isFocused ? env->CallBooleanMethod(v, c.isFocused) : JNI_FALSE;
+    const jboolean ftm = c.isFocusableInTouchMode ? env->CallBooleanMethod(v, c.isFocusableInTouchMode) : JNI_FALSE;
+    const jboolean itm = c.isInTouchMode ? env->CallBooleanMethod(v, c.isInTouchMode) : JNI_FALSE;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+    const int x = px + left;
+    const int y = py + top;
+
+    jclass vc = env->GetObjectClass(v);
+    jstring jn = vc ? static_cast<jstring>(env->CallObjectMethod(vc, c.getName)) : nullptr;
+    const char* cn = jn ? env->GetStringUTFChars(jn, nullptr) : nullptr;
+    const char* shortName = cn;
+    if (cn != nullptr) { const char* dot = strrchr(cn, '.'); if (dot && dot[1]) shortName = dot + 1; }
+
+    // resource-entry name, when the view has a real id
+    char idbuf[96]; idbuf[0] = 0;
+    const jint id = env->CallIntMethod(v, c.getId);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (id != -1 && resources != nullptr && c.getResourceEntryName != nullptr) {
+        jstring rn = static_cast<jstring>(env->CallObjectMethod(resources, c.getResourceEntryName, id));
+        if (env->ExceptionCheck()) { env->ExceptionClear(); }
+        else if (rn != nullptr) {
+            const char* rs = env->GetStringUTFChars(rn, nullptr);
+            if (rs) { snprintf(idbuf, sizeof(idbuf), "%s", rs); env->ReleaseStringUTFChars(rn, rs); }
+        }
+        if (rn) env->DeleteLocalRef(rn);
+    }
+
+    // text, for anything that is a TextView
+    char txt[128]; txt[0] = 0;
+    if (c.tvCls && env->IsInstanceOf(v, c.tvCls) && c.getText) {
+        jobject cs = env->CallObjectMethod(v, c.getText);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (cs) {
+            jstring js = static_cast<jstring>(env->CallObjectMethod(cs, c.toString));
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (js) {
+                const char* ts = env->GetStringUTFChars(js, nullptr);
+                if (ts) { snprintf(txt, sizeof(txt), "%s", ts); env->ReleaseStringUTFChars(js, ts); }
+                env->DeleteLocalRef(js);
+            }
+            env->DeleteLocalRef(cs);
+        }
+    }
+
+    char indent[64]; int di = depth < 20 ? depth : 20;
+    for (int i = 0; i < di; ++i) indent[i] = ' ';
+    indent[di] = 0;
+    if (vis == 0 && w > 0 && h > 0) {   // VISIBLE and laid out
+        // WESTLAKE §462: for a Material Slider also print its LIVE value. Reading the row label
+        // behind the dialog cannot distinguish "the drag never moved the slider" from "it moved but
+        // the label only refreshes on confirm" — this settles it at the source.
+        char extra[48]; extra[0] = 0;
+        if (shortName && strstr(shortName, "Slider") != nullptr) {
+            jclass sc = env->GetObjectClass(v);
+            jmethodID gv = sc ? env->GetMethodID(sc, "getValue", "()F") : nullptr;
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (gv != nullptr) {
+                jfloat val = env->CallFloatMethod(v, gv);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); }
+                else { snprintf(extra, sizeof(extra), " VALUE=%.3f", (double)val); }
+            }
+            if (sc) env->DeleteLocalRef(sc);
+        }
+        LOGI("VT %s%s id=%s rect=[%d,%d %dx%d] c=%d en=%d f=%d ftm=%d itm=%d %s%s%s%s",
+             indent, shortName ? shortName : "?", idbuf[0] ? idbuf : "-",
+             x, y, (int)w, (int)h, (int)clk, (int)en, (int)foc, (int)ftm, (int)itm,
+             txt[0] ? "\"" : "", txt, txt[0] ? "\"" : "", extra);
+    }
+    if (jn && cn) env->ReleaseStringUTFChars(jn, cn);
+    if (jn) env->DeleteLocalRef(jn);
+    if (vc) env->DeleteLocalRef(vc);
+
+    if (vis != 0) return;   // do not descend into hidden subtrees
+    if (c.vgCls && env->IsInstanceOf(v, c.vgCls)) {
+        const jint n = env->CallIntMethod(v, c.getChildCount);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+        const jint sx = env->CallIntMethod(v, c.getScrollX);
+        const jint sy = env->CallIntMethod(v, c.getScrollY);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+        for (jint i = 0; i < n; ++i) {
+            jobject ch = env->CallObjectMethod(v, c.getChildAt, i);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            if (ch) { wl_dump_view(env, c, ch, x - sx, y - sy, depth + 1, resources); env->DeleteLocalRef(ch); }
+        }
+    }
+}
+
+void wl_dump_view_tree(JNIEnv* env, int rootIdx);
+void wl_dump_view_tree(JNIEnv* env, int rootIdx) {
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    if (!wmgCls || env->ExceptionCheck()) { env->ExceptionClear(); return; }
+    jmethodID getInst = env->GetStaticMethodID(wmgCls, "getInstance", "()Landroid/view/WindowManagerGlobal;");
+    jobject wmg = env->CallStaticObjectMethod(wmgCls, getInst);
+    if (!wmg || env->ExceptionCheck()) { env->ExceptionClear(); return; }
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = env->GetObjectField(wmg, mRootsF);
+    if (!roots) return;
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jint nn = env->CallIntMethod(roots, sizeM);
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+
+    WlViewDumpCtx c{};
+    c.viewCls = env->FindClass("android/view/View");
+    c.vgCls   = env->FindClass("android/view/ViewGroup");
+    c.tvCls   = env->FindClass("android/widget/TextView");
+    c.clsCls  = env->FindClass("java/lang/Class");
+    c.resCls  = env->FindClass("android/content/res/Resources");
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    c.getName     = c.clsCls ? env->GetMethodID(c.clsCls, "getName", "()Ljava/lang/String;") : nullptr;
+    c.getId       = env->GetMethodID(c.viewCls, "getId", "()I");
+    c.getVis      = env->GetMethodID(c.viewCls, "getVisibility", "()I");
+    c.isClickable = env->GetMethodID(c.viewCls, "isClickable", "()Z");
+    c.isEnabled   = env->GetMethodID(c.viewCls, "isEnabled", "()Z");
+    c.isFocused   = env->GetMethodID(c.viewCls, "isFocused", "()Z");
+    c.isFocusableInTouchMode = env->GetMethodID(c.viewCls, "isFocusableInTouchMode", "()Z");
+    c.isInTouchMode = env->GetMethodID(c.viewCls, "isInTouchMode", "()Z");
+    if (env->ExceptionCheck()) env->ExceptionClear();   // §555: optional, never fatal
+    c.getW        = env->GetMethodID(c.viewCls, "getWidth", "()I");
+    c.getH        = env->GetMethodID(c.viewCls, "getHeight", "()I");
+    c.getLeft     = env->GetMethodID(c.viewCls, "getLeft", "()I");
+    c.getTop      = env->GetMethodID(c.viewCls, "getTop", "()I");
+    c.getScrollX  = env->GetMethodID(c.viewCls, "getScrollX", "()I");
+    c.getScrollY  = env->GetMethodID(c.viewCls, "getScrollY", "()I");
+    c.getResources= env->GetMethodID(c.viewCls, "getResources", "()Landroid/content/res/Resources;");
+    c.getChildCount = c.vgCls ? env->GetMethodID(c.vgCls, "getChildCount", "()I") : nullptr;
+    c.getChildAt    = c.vgCls ? env->GetMethodID(c.vgCls, "getChildAt", "(I)Landroid/view/View;") : nullptr;
+    c.getText       = c.tvCls ? env->GetMethodID(c.tvCls, "getText", "()Ljava/lang/CharSequence;") : nullptr;
+    c.getResourceEntryName = c.resCls ? env->GetMethodID(c.resCls, "getResourceEntryName",
+                                            "(I)Ljava/lang/String;") : nullptr;
+    jclass objCls = env->FindClass("java/lang/Object");
+    c.toString = env->GetMethodID(objCls, "toString", "()Ljava/lang/String;");
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    for (jint i = 0; i < nn; ++i) {
+        if (rootIdx >= 0 && i != rootIdx) continue;
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
+        if (!vri) continue;
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (view) {
+            LOGI("VT ==== root[%d] ====", (int)i);
+            jobject res = c.getResources ? env->CallObjectMethod(view, c.getResources) : nullptr;
+            if (env->ExceptionCheck()) { env->ExceptionClear(); res = nullptr; }
+            wl_dump_view(env, c, view, 0, 0, 0, res);
+            if (res) env->DeleteLocalRef(res);
+            env->DeleteLocalRef(view);
+        }
+        env->DeleteLocalRef(vri);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    LOGI("VT ==== end ====");
+}
+
+// ============================================================
+// WESTLAKE §433 — reflectively inspect an APP class (libart-free probe)
+// ============================================================
+// The sound-library fetch dies on `NoSuchMethodError: InvokeType(4) Lq6/b;->b(Ln7/c;)…` even though
+// dexlib2 proves the interface declares that method. Rebuilding libart to instrument the resolver
+// is blocked (the deployed binary is not reproducible from the tree), so ask the RUNTIME instead:
+// load the class through the app's own ClassLoader and list what reflection sees.
+//   reflection sees b(...)  => the class linked fine; the bug is invoke-interface resolution/IMT
+//   reflection does NOT     => the interface's abstract methods were mis-loaded at class-load time
+// Drive it with:  echo "q q6.b" > /data/local/tmp/noice_tap
+// §437: shared helper — the app ClassLoader via a live decor view.
+static jobject wl_app_class_loader(JNIEnv* env);
+// §570 — mark every method of an app class NON-COMPILABLE, so ART's JIT skips it.
+//
+// Why this exists: with the §568 relayout storm fixed, the JIT compiles real app code and then dies
+// with a StackOverflowError whose FIRST occurrence is on a kotlinx CoroutineScheduler worker (it is
+// swallowed by the no-op ThreadGroup.uncaughtException, so only main's death is visible). The last
+// method compiled before it is kotlin.coroutines.jvm.internal.ContinuationImpl.resumeWith. Compiled
+// code does not go through the interpreter's DoCall, so westlake's §436 interface-dispatch repair —
+// which lives there — is bypassed and the continuation chain recurses. Excluding just those classes
+// keeps the JIT for everything else.
+//
+// The flag was read out of the DEPLOYED binary, not guessed from AOSP source (values move between
+// versions). art::jit::Jit::CompileMethodInternal @0x95f3a0 does:
+//     ldr w8, [x19, #4]        ; ArtMethod::access_flags_  -> offset 4
+//     and w8, w8, #0x82800000  ; kAccIntrinsic|kAccCompileDontBother|kAccPreCompiled
+//     cmp w8, #0x02800000      ; IsPreCompiled(): DontBother|PreCompiled set, Intrinsic clear
+// so kAccCompileDontBother = 0x02000000. Set it ALONE — setting 0x00800000 too would make the
+// method look pre-compiled instead of skipped.
+//
+// ★jmethodID IS the ArtMethod* in ART, so FromReflectedMethod gives the pointer directly; no need
+// to reach for the private Executable.artMethod field.
+static const uint32_t kWlAccCompileDontBother = 0x02000000u;
+
+void wl_jit_exclude_class(JNIEnv* env, const char* dotted);
+void wl_jit_exclude_class(JNIEnv* env, const char* dotted) {
+    // Same app-ClassLoader route as §433 below: reach a live decor view and ask its Context.
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    jmethodID getInst = wmgCls ? env->GetStaticMethodID(wmgCls, "getInstance",
+        "()Landroid/view/WindowManagerGlobal;") : nullptr;
+    jobject wmg = getInst ? env->CallStaticObjectMethod(wmgCls, getInst) : nullptr;
+    if (wmg == nullptr) { if (env->ExceptionCheck()) env->ExceptionClear();
+                          LOGE("[JIT-570] no WindowManagerGlobal"); return; }
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = mRootsF ? env->GetObjectField(wmg, mRootsF) : nullptr;
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+    jclass viewCls = env->FindClass("android/view/View");
+    jmethodID getCtx = env->GetMethodID(viewCls, "getContext", "()Landroid/content/Context;");
+    jobject loader = nullptr;
+    const jint nn = roots ? env->CallIntMethod(roots, sizeM) : 0;
+    for (jint i = 0; i < nn && loader == nullptr; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (!vri) continue;
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (view) {
+            jobject ctx = env->CallObjectMethod(view, getCtx);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (ctx) {
+                jclass ctxCls = env->FindClass("android/content/Context");
+                jmethodID getCL = env->GetMethodID(ctxCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+                loader = getCL ? env->CallObjectMethod(ctx, getCL) : nullptr;
+                if (env->ExceptionCheck()) { env->ExceptionClear(); loader = nullptr; }
+                env->DeleteLocalRef(ctx);
+            }
+            env->DeleteLocalRef(view);
+        }
+        env->DeleteLocalRef(vri);
+    }
+    if (loader == nullptr) { LOGE("[JIT-570] no app ClassLoader"); return; }
+
+    jclass clCls = env->FindClass("java/lang/ClassLoader");
+    jmethodID loadClassM = env->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring jn = env->NewStringUTF(dotted);
+    jobject klass = env->CallObjectMethod(loader, loadClassM, jn);
+    if (klass == nullptr || env->ExceptionCheck()) {
+        env->ExceptionClear();
+        LOGE("[JIT-570] loadClass(%{public}s) FAILED — not excluded", dotted);
+        return;
+    }
+    jclass classCls = env->FindClass("java/lang/Class");
+    jmethodID getDeclM = env->GetMethodID(classCls, "getDeclaredMethods", "()[Ljava/lang/reflect/Method;");
+    jobjectArray ms = getDeclM ? (jobjectArray) env->CallObjectMethod(klass, getDeclM) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); ms = nullptr; }
+    if (ms == nullptr) { LOGE("[JIT-570] getDeclaredMethods(%{public}s) failed", dotted); return; }
+
+    const jsize mn = env->GetArrayLength(ms);
+    int marked = 0, already = 0;
+    for (jsize i = 0; i < mn; ++i) {
+        jobject m = env->GetObjectArrayElement(ms, i);
+        if (m == nullptr) continue;
+        jmethodID mid = env->FromReflectedMethod(m);      // == ArtMethod*
+        if (mid != nullptr) {
+            uint32_t* af = reinterpret_cast<uint32_t*>(reinterpret_cast<char*>(mid) + 4);
+            if ((*af & kWlAccCompileDontBother) != 0) { ++already; }
+            else { *af |= kWlAccCompileDontBother; ++marked; }
+        }
+        env->DeleteLocalRef(m);
+    }
+    env->DeleteLocalRef(ms);
+    LOGE("[JIT-570] %{public}s: %d method(s) marked non-compilable (%d already), of %d",
+         dotted, marked, already, (int) mn);
+}
+
+void wl_inspect_app_class(JNIEnv* env, const char* dotted);
+void wl_inspect_app_class(JNIEnv* env, const char* dotted) {
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    jmethodID getInst = wmgCls ? env->GetStaticMethodID(wmgCls, "getInstance",
+        "()Landroid/view/WindowManagerGlobal;") : nullptr;
+    jobject wmg = getInst ? env->CallStaticObjectMethod(wmgCls, getInst) : nullptr;
+    if (wmg == nullptr) { if (env->ExceptionCheck()) env->ExceptionClear();
+                          LOGE("§433: no WindowManagerGlobal"); return; }
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = mRootsF ? env->GetObjectField(wmg, mRootsF) : nullptr;
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+    jclass viewCls = env->FindClass("android/view/View");
+    jmethodID getCtx = env->GetMethodID(viewCls, "getContext", "()Landroid/content/Context;");
+    jobject loader = nullptr;
+    const jint nn = roots ? env->CallIntMethod(roots, sizeM) : 0;
+    for (jint i = 0; i < nn && loader == nullptr; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (!vri) continue;
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (view) {
+            jobject ctx = env->CallObjectMethod(view, getCtx);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (ctx) {
+                jclass ctxCls = env->FindClass("android/content/Context");
+                jmethodID getCL = env->GetMethodID(ctxCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+                loader = getCL ? env->CallObjectMethod(ctx, getCL) : nullptr;
+                if (env->ExceptionCheck()) { env->ExceptionClear(); loader = nullptr; }
+                env->DeleteLocalRef(ctx);
+            }
+            env->DeleteLocalRef(view);
+        }
+        env->DeleteLocalRef(vri);
+    }
+    if (loader == nullptr) { LOGE("§433: no app ClassLoader"); return; }
+
+    jclass clCls = env->FindClass("java/lang/ClassLoader");
+    jmethodID loadClassM = env->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring jn = env->NewStringUTF(dotted);
+    jobject klass = env->CallObjectMethod(loader, loadClassM, jn);
+    if (klass == nullptr || env->ExceptionCheck()) {
+        env->ExceptionClear();
+        LOGE("§433: loadClass(%s) FAILED", dotted);
+        return;
+    }
+    jclass classCls = env->FindClass("java/lang/Class");
+    jmethodID isIface = env->GetMethodID(classCls, "isInterface", "()Z");
+    jmethodID getMods = env->GetMethodID(classCls, "getModifiers", "()I");
+    jmethodID getDM   = env->GetMethodID(classCls, "getDeclaredMethods", "()[Ljava/lang/reflect/Method;");
+    jmethodID getName = env->GetMethodID(classCls, "getName", "()Ljava/lang/String;");
+    // §433b: identity of the Class object + its defining ClassLoader + dex origin. If the call
+    // site's interface resolves to a DIFFERENT Class (duplicate load by two ClassLoaders), the
+    // index-based interface lookup fails even though reflection on "a" q6.b succeeds.
+    {
+        jmethodID getCL2 = env->GetMethodID(classCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+        jobject kl = getCL2 ? env->CallObjectMethod(klass, getCL2) : nullptr;
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        jclass objCls = env->FindClass("java/lang/Object");
+        jmethodID hash = env->GetMethodID(objCls, "hashCode", "()I");
+        jmethodID toStr = env->GetMethodID(objCls, "toString", "()Ljava/lang/String;");
+        jstring ls = kl ? (jstring)env->CallObjectMethod(kl, toStr) : nullptr;
+        const char* lc = ls ? env->GetStringUTFChars(ls, nullptr) : nullptr;
+        LOGI("§433 %s: classHash=0x%x loaderHash=0x%x loader=%s",
+             dotted, (int)env->CallIntMethod(klass, hash),
+             kl ? (int)env->CallIntMethod(kl, hash) : 0, lc ? lc : "(null/boot)");
+        if (ls && lc) env->ReleaseStringUTFChars(ls, lc);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+    LOGI("§433 %s: isInterface=%d modifiers=0x%x",
+         dotted, (int)env->CallBooleanMethod(klass, isIface),
+         (int)env->CallIntMethod(klass, getMods));
+    jobjectArray methods = (jobjectArray)env->CallObjectMethod(klass, getDM);
+    if (methods == nullptr || env->ExceptionCheck()) {
+        env->ExceptionClear();
+        LOGE("§433 %s: getDeclaredMethods FAILED", dotted);
+        return;
+    }
+    jclass mCls = env->FindClass("java/lang/reflect/Method");
+    jmethodID mName = env->GetMethodID(mCls, "getName", "()Ljava/lang/String;");
+    jmethodID mParams = env->GetMethodID(mCls, "getParameterTypes", "()[Ljava/lang/Class;");
+    jmethodID mRet = env->GetMethodID(mCls, "getReturnType", "()Ljava/lang/Class;");
+    jmethodID mMods = env->GetMethodID(mCls, "getModifiers", "()I");
+    const jsize n = env->GetArrayLength(methods);
+    LOGI("§433 %s: %d declared method(s)", dotted, (int)n);
+    for (jsize i = 0; i < n; ++i) {
+        jobject m = env->GetObjectArrayElement(methods, i);
+        if (!m) continue;
+        jstring nm = (jstring)env->CallObjectMethod(m, mName);
+        const char* nc = nm ? env->GetStringUTFChars(nm, nullptr) : nullptr;
+        jobjectArray ps = (jobjectArray)env->CallObjectMethod(m, mParams);
+        const jsize pn = ps ? env->GetArrayLength(ps) : 0;
+        char params[256]; params[0] = 0;
+        for (jsize k = 0; k < pn; ++k) {
+            jobject pc = env->GetObjectArrayElement(ps, k);
+            jstring pnm = pc ? (jstring)env->CallObjectMethod(pc, getName) : nullptr;
+            const char* pc2 = pnm ? env->GetStringUTFChars(pnm, nullptr) : nullptr;
+            if (pc2) { strncat(params, pc2, sizeof(params) - strlen(params) - 2); strncat(params, ",", 2); }
+            if (pnm && pc2) env->ReleaseStringUTFChars(pnm, pc2);
+            if (pnm) env->DeleteLocalRef(pnm);
+            if (pc) env->DeleteLocalRef(pc);
+        }
+        jobject rt = env->CallObjectMethod(m, mRet);
+        jstring rnm = rt ? (jstring)env->CallObjectMethod(rt, getName) : nullptr;
+        const char* rc = rnm ? env->GetStringUTFChars(rnm, nullptr) : nullptr;
+        LOGI("§433   %s(%s) -> %s  mods=0x%x",
+             nc ? nc : "?", params, rc ? rc : "?", (int)env->CallIntMethod(m, mMods));
+        if (rnm && rc) env->ReleaseStringUTFChars(rnm, rc);
+        if (nm && nc) env->ReleaseStringUTFChars(nm, nc);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(m);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+// §437: the app ClassLoader, via a live decor view (same route resolveTouchInjector uses).
+static jobject wl_app_class_loader(JNIEnv* env) {
+    jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
+    jmethodID getInst = wmgCls ? env->GetStaticMethodID(wmgCls, "getInstance",
+        "()Landroid/view/WindowManagerGlobal;") : nullptr;
+    jobject wmg = getInst ? env->CallStaticObjectMethod(wmgCls, getInst) : nullptr;
+    if (wmg == nullptr) { if (env->ExceptionCheck()) env->ExceptionClear(); return nullptr; }
+    jfieldID mRootsF = env->GetFieldID(wmgCls, "mRoots", "Ljava/util/ArrayList;");
+    jobject roots = mRootsF ? env->GetObjectField(wmg, mRootsF) : nullptr;
+    if (roots == nullptr) return nullptr;
+    jclass listCls = env->FindClass("java/util/ArrayList");
+    jmethodID sizeM = env->GetMethodID(listCls, "size", "()I");
+    jmethodID getM  = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+    jclass vriCls = env->FindClass("android/view/ViewRootImpl");
+    jfieldID mViewF = env->GetFieldID(vriCls, "mView", "Landroid/view/View;");
+    jclass viewCls = env->FindClass("android/view/View");
+    jmethodID getCtx = env->GetMethodID(viewCls, "getContext", "()Landroid/content/Context;");
+    jclass ctxCls = env->FindClass("android/content/Context");
+    jmethodID getCL = env->GetMethodID(ctxCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    const jint nn = env->CallIntMethod(roots, sizeM);
+    for (jint i = 0; i < nn; ++i) {
+        jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (!vri) continue;
+        jobject view = env->GetObjectField(vri, mViewF);
+        if (view) {
+            jobject ctx = env->CallObjectMethod(view, getCtx);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (ctx) {
+                jobject cl = env->CallObjectMethod(ctx, getCL);
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                env->DeleteLocalRef(ctx);
+                if (cl) { env->DeleteLocalRef(view); env->DeleteLocalRef(vri); return cl; }
+            }
+            env->DeleteLocalRef(view);
+        }
+        env->DeleteLocalRef(vri);
+    }
+    return nullptr;
+}
+
+// ============================================================
+// WESTLAKE §437 — PROXY PROBE: does JNI dispatch on a Proxy work?
+// ============================================================
+// §436 root-caused the invoke-interface NoSuchMethodError to our own validator in
+// FindMethodToCall (entrypoint_utils-inl.h): it calls GetNameView()/GetSignature() on the
+// *proxy* ArtMethod, which AOSP forbids (DCHECK(!IsProxyMethod()), compiled out by -DNDEBUG),
+// reads the wrong dex, and fabricates a signature mismatch.
+// PREDICTION: JNI dispatches from an already-resolved jmethodID and never consults that
+// validator, so the SAME call that fails from app bytecode must SUCCEED through JNI.
+// Annotations are java.lang.reflect.Proxy instances, and `g9.f.value()` is one of the two
+// failing sites — so annotations on the app's own Retrofit interface give us live proxies
+// without needing to reach into the app's object graph.
+// Drive with:  echo "p q6.b" > /data/local/tmp/noice_tap
+void wl_proxy_probe(JNIEnv* env, const char* dotted);
+void wl_proxy_probe(JNIEnv* env, const char* dotted) {
+    jobject loader = wl_app_class_loader(env);
+    if (loader == nullptr) { LOGE("§437: no app ClassLoader"); return; }
+    jclass clCls = env->FindClass("java/lang/ClassLoader");
+    jmethodID loadClassM = env->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring jn = env->NewStringUTF(dotted);
+    jobject klass = env->CallObjectMethod(loader, loadClassM, jn);
+    if (klass == nullptr || env->ExceptionCheck()) { env->ExceptionClear();
+        LOGE("§437: loadClass(%s) failed", dotted); return; }
+
+    jclass classCls = env->FindClass("java/lang/Class");
+    jmethodID getDM = env->GetMethodID(classCls, "getDeclaredMethods", "()[Ljava/lang/reflect/Method;");
+    jmethodID getName = env->GetMethodID(classCls, "getName", "()Ljava/lang/String;");
+    jclass mCls = env->FindClass("java/lang/reflect/Method");
+    jmethodID mAnns = env->GetMethodID(mCls, "getAnnotations", "()[Ljava/lang/annotation/Annotation;");
+    jmethodID mName = env->GetMethodID(mCls, "getName", "()Ljava/lang/String;");
+    jclass annCls = env->FindClass("java/lang/annotation/Annotation");
+    jmethodID annType = env->GetMethodID(annCls, "annotationType", "()Ljava/lang/Class;");
+    jclass objCls = env->FindClass("java/lang/Object");
+    jmethodID objGetClass = env->GetMethodID(objCls, "getClass", "()Ljava/lang/Class;");
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    jobjectArray methods = (jobjectArray)env->CallObjectMethod(klass, getDM);
+    if (methods == nullptr) { if (env->ExceptionCheck()) env->ExceptionClear();
+        LOGE("§437: getDeclaredMethods failed"); return; }
+    const jsize nm = env->GetArrayLength(methods);
+    int probed = 0;
+    for (jsize i = 0; i < nm; ++i) {
+        jobject m = env->GetObjectArrayElement(methods, i);
+        if (!m) continue;
+        jstring mn = (jstring)env->CallObjectMethod(m, mName);
+        const char* mnc = mn ? env->GetStringUTFChars(mn, nullptr) : nullptr;
+        jobjectArray anns = (jobjectArray)env->CallObjectMethod(m, mAnns);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); anns = nullptr; }
+        const jsize na = anns ? env->GetArrayLength(anns) : 0;
+        for (jsize k = 0; k < na; ++k) {
+            jobject a = env->GetObjectArrayElement(anns, k);
+            if (!a) continue;
+            // concrete runtime class of the annotation instance -> expect $ProxyN
+            jobject acls = env->CallObjectMethod(a, objGetClass);
+            jstring acn = acls ? (jstring)env->CallObjectMethod(acls, getName) : nullptr;
+            const char* acc = acn ? env->GetStringUTFChars(acn, nullptr) : nullptr;
+            // the annotation INTERFACE it implements
+            jobject at = env->CallObjectMethod(a, annType);
+            jstring atn = at ? (jstring)env->CallObjectMethod(at, getName) : nullptr;
+            const char* atc = atn ? env->GetStringUTFChars(atn, nullptr) : nullptr;
+            // THE TEST: invoke value() on the proxy through JNI
+            const char* result = "(no value() method)";
+            char buf[192];
+            if (at != nullptr) {
+                jmethodID valueM = env->GetMethodID((jclass)at, "value", "()Ljava/lang/String;");
+                if (!valueM || env->ExceptionCheck()) { env->ExceptionClear(); }
+                else {
+                    jstring v = (jstring)env->CallObjectMethod(a, valueM);
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                        result = "*** THREW ***";
+                    } else if (v != nullptr) {
+                        const char* vc = env->GetStringUTFChars(v, nullptr);
+                        snprintf(buf, sizeof(buf), "OK -> \"%s\"", vc ? vc : "?");
+                        if (vc) env->ReleaseStringUTFChars(v, vc);
+                        result = buf;
+                    } else {
+                        result = "OK -> null";
+                    }
+                    probed++;
+                }
+            }
+            LOGI("§437 %s.%s  annotation=%s  impl=%s  value()=%s",
+                 dotted, mnc ? mnc : "?", atc ? atc : "?", acc ? acc : "?", result);
+            if (atn && atc) env->ReleaseStringUTFChars(atn, atc);
+            if (acn && acc) env->ReleaseStringUTFChars(acn, acc);
+            if (atn) env->DeleteLocalRef(atn);
+            if (acn) env->DeleteLocalRef(acn);
+            if (at) env->DeleteLocalRef(at);
+            if (acls) env->DeleteLocalRef(acls);
+            env->DeleteLocalRef(a);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+        }
+        if (mn && mnc) env->ReleaseStringUTFChars(mn, mnc);
+        if (mn) env->DeleteLocalRef(mn);
+        if (anns) env->DeleteLocalRef(anns);
+        env->DeleteLocalRef(m);
+    }
+    LOGI("§437 done: %d proxy value() call(s) attempted via JNI", probed);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+// ============================================================
+// WESTLAKE §438 — the decisive bytecode-vs-JNI proxy test
+// ============================================================
+// §436: our validator in FindMethodToCall calls GetNameView()/GetSignature() on the *proxy*
+// ArtMethod, which AOSP forbids, so it fabricates a signature mismatch and throws
+// NoSuchMethodError naming the interface. PREDICTION: JNI dispatches from an already-resolved
+// jmethodID and never runs that validator, so the SAME call must succeed through JNI.
+// §437 tried to get a proxy from annotations; Method.getAnnotations() SIGSEGVs on a bridge thread.
+// So instead: borrow an InvocationHandler from a proxy the adapter ALREADY installed
+// (AppSpawnXInit stubs IActivityManager/IPackageManager with dynamic Proxies), and build a
+// q6.b proxy with it. Then JNI-call exactly the method the app fails on.
+// Drive with:  echo "x q6.b b (Ln7/c;)Ljava/lang/Object;" > /data/local/tmp/noice_tap
+void wl_proxy_dispatch_test(JNIEnv* env, const char* dotted, const char* mname, const char* msig);
+void wl_proxy_dispatch_test(JNIEnv* env, const char* dotted, const char* mname, const char* msig) {
+    jclass proxyCls = env->FindClass("java/lang/reflect/Proxy");
+    jmethodID isProxyM = proxyCls ? env->GetStaticMethodID(proxyCls, "isProxyClass",
+        "(Ljava/lang/Class;)Z") : nullptr;
+    jmethodID getIhM = proxyCls ? env->GetStaticMethodID(proxyCls, "getInvocationHandler",
+        "(Ljava/lang/Object;)Ljava/lang/reflect/InvocationHandler;") : nullptr;
+    jmethodID newProxyM = proxyCls ? env->GetStaticMethodID(proxyCls, "newProxyInstance",
+        "(Ljava/lang/ClassLoader;[Ljava/lang/Class;Ljava/lang/reflect/InvocationHandler;)Ljava/lang/Object;") : nullptr;
+    jclass objCls = env->FindClass("java/lang/Object");
+    jmethodID objGetClass = env->GetMethodID(objCls, "getClass", "()Ljava/lang/Class;");
+    jclass classCls = env->FindClass("java/lang/Class");
+    jmethodID clsGetName = env->GetMethodID(classCls, "getName", "()Ljava/lang/String;");
+    if (!isProxyM || !getIhM || !newProxyM) { if (env->ExceptionCheck()) env->ExceptionClear();
+        LOGE("§438: java.lang.reflect.Proxy statics unresolved"); return; }
+
+    // --- 1. find ANY existing proxy in the process to borrow a handler from ---
+    struct Src { const char* cls; const char* m; const char* sig; };
+    static const Src kSrcs[] = {
+        {"android/app/ActivityManager",  "getService",       "()Landroid/app/IActivityManager;"},
+        {"android/app/ActivityThread",   "getPackageManager","()Landroid/content/pm/IPackageManager;"},
+        {"android/app/ActivityManagerNative", "getDefault",  "()Landroid/app/IActivityManager;"},
+    };
+    jobject handler = nullptr;
+    for (const Src& src : kSrcs) {
+        jclass c = env->FindClass(src.cls);
+        if (!c || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+        jmethodID mid = env->GetStaticMethodID(c, src.m, src.sig);
+        if (!mid || env->ExceptionCheck()) { env->ExceptionClear(); env->DeleteLocalRef(c); continue; }
+        jobject o = env->CallStaticObjectMethod(c, mid);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); o = nullptr; }
+        if (o != nullptr) {
+            jobject oc = env->CallObjectMethod(o, objGetClass);
+            jboolean isP = oc ? env->CallStaticBooleanMethod(proxyCls, isProxyM, oc) : JNI_FALSE;
+            jstring ocn = oc ? (jstring)env->CallObjectMethod(oc, clsGetName) : nullptr;
+            const char* occ = ocn ? env->GetStringUTFChars(ocn, nullptr) : nullptr;
+            LOGI("§438 source %s.%s -> %s isProxy=%d", src.cls, src.m, occ ? occ : "?", (int)isP);
+            if (ocn && occ) env->ReleaseStringUTFChars(ocn, occ);
+            if (isP) {
+                handler = env->CallStaticObjectMethod(proxyCls, getIhM, o);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); handler = nullptr; }
+            }
+            if (oc) env->DeleteLocalRef(oc);
+            env->DeleteLocalRef(o);
+        }
+        env->DeleteLocalRef(c);
+        if (handler != nullptr) break;
+    }
+    if (handler == nullptr) { LOGE("§438: found no existing Proxy to borrow a handler from"); return; }
+    LOGI("§438 borrowed an InvocationHandler OK");
+
+    // --- 2. build a proxy for the app interface with that handler ---
+    jobject loader = wl_app_class_loader(env);
+    jclass clCls = env->FindClass("java/lang/ClassLoader");
+    jmethodID loadClassM = env->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring jn = env->NewStringUTF(dotted);
+    jobject iface = (loader && loadClassM) ? env->CallObjectMethod(loader, loadClassM, jn) : nullptr;
+    if (iface == nullptr || env->ExceptionCheck()) { env->ExceptionClear();
+        LOGE("§438: loadClass(%s) failed", dotted); return; }
+    jobjectArray ifaces = env->NewObjectArray(1, classCls, iface);
+    jobject proxy = env->CallStaticObjectMethod(proxyCls, newProxyM, loader, ifaces, handler);
+    if (proxy == nullptr || env->ExceptionCheck()) {
+        wl_report_exception(env, "§438 newProxyInstance");
+        LOGE("§438: newProxyInstance(%s) FAILED", dotted); return;
+    }
+    jobject pc = env->CallObjectMethod(proxy, objGetClass);
+    jstring pcn = pc ? (jstring)env->CallObjectMethod(pc, clsGetName) : nullptr;
+    const char* pcc = pcn ? env->GetStringUTFChars(pcn, nullptr) : nullptr;
+    LOGI("§438 built proxy for %s -> %s", dotted, pcc ? pcc : "?");
+    if (pcn && pcc) env->ReleaseStringUTFChars(pcn, pcc);
+
+    // --- 3. THE TEST: reflectively invoke the exact method the app's bytecode cannot resolve.
+    // NOT env->GetMethodID((jclass)iface, ...): §408c — GetMethodID on an APP class from a bridge
+    // thread drives ClassLinker::EnsureInitialized and SEGVs in mirror::Class::GetDescriptor
+    // (confirmed again here: the probe died right there). getDeclaredMethods() is known-safe (§433),
+    // and Method.invoke() reaches the proxy through reflection.cc, which — like JNI — never consults
+    // FindMethodToCall's bytecode-path validator. Same discriminator, safe route.
+    (void) msig;
+    jmethodID getDMs = env->GetMethodID(classCls, "getDeclaredMethods", "()[Ljava/lang/reflect/Method;");
+    jobjectArray ms = getDMs ? (jobjectArray)env->CallObjectMethod(iface, getDMs) : nullptr;
+    if (ms == nullptr) { if (env->ExceptionCheck()) env->ExceptionClear();
+        LOGE("§438: getDeclaredMethods failed"); return; }
+    jclass methCls = env->FindClass("java/lang/reflect/Method");
+    jmethodID methName = env->GetMethodID(methCls, "getName", "()Ljava/lang/String;");
+    jmethodID methInvoke = env->GetMethodID(methCls, "invoke",
+        "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;");
+    jobject target = nullptr;
+    const jsize mn = env->GetArrayLength(ms);
+    for (jsize i = 0; i < mn && target == nullptr; ++i) {
+        jobject m = env->GetObjectArrayElement(ms, i);
+        if (!m) continue;
+        jstring nm = (jstring)env->CallObjectMethod(m, methName);
+        const char* nc = nm ? env->GetStringUTFChars(nm, nullptr) : nullptr;
+        if (nc && strcmp(nc, mname) == 0) target = env->NewGlobalRef(m);
+        if (nm && nc) env->ReleaseStringUTFChars(nm, nc);
+        if (nm) env->DeleteLocalRef(nm);
+        env->DeleteLocalRef(m);
+    }
+    if (target == nullptr) { LOGE("§438: no declared method named '%s'", mname); return; }
+    LOGI("§438 resolved java.lang.reflect.Method for %s.%s", dotted, mname);
+
+    jobjectArray args = env->NewObjectArray(1, objCls, nullptr);   // single null arg (Continuation)
+    jobject r = env->CallObjectMethod(target, methInvoke, proxy, args);
+    if (env->ExceptionCheck()) {
+        wl_report_exception(env, "§438 Method.invoke");
+        LOGE("§438 RESULT: reflective invoke on the proxy THREW (see exception above)");
+    } else {
+        LOGI("§438 RESULT: *** reflective invoke on the proxy SUCCEEDED *** (returned %s) "
+             "=> resolution + proxy dispatch are SOUND; only the bytecode-path validator is broken",
+             r == nullptr ? "null" : "an object");
+    }
+    env->DeleteGlobalRef(target);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
 static jclass resolveTouchInjector(JNIEnv* env, jclass viewCls, jobject decorView) {
     // --- 1. BCP class via FindClass (system/boot classloader) ---
     jclass bcpCls = env->FindClass("adapter/window/OHTouchInjector");
@@ -663,6 +1607,7 @@ int32_t OHInputBridge::dispatchTouchViaViewRoot(int32_t action, float x, float y
 
     // Register the VelocityTracker JNI stub (once) so View.dispatchTouchEvent's
     // RecyclerView/scroll/gesture velocity tracking doesn't UnsatisfiedLinkError.
+    wl_ensure_looper(env);            // §411 — before any dispatch
     ensureVelocityTrackerStub(env);
 
     // --- find focused decor view (mView) ---
@@ -684,29 +1629,204 @@ int32_t OHInputBridge::dispatchTouchViaViewRoot(int32_t action, float x, float y
     jclass viewCls = env->FindClass("android/view/View");
     jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
     jobject decorView = nullptr, fallbackView = nullptr;
+    // WESTLAKE §398: also keep the ViewRootImpl that owns the view we pick.
+    // Dispatching straight to View.dispatchTouchEvent from our own thread DELIVERS the touch but
+    // aborts the child: noice's click handlers run Kotlin lambdas, whose MethodHandle/MethodType
+    // machinery NPEs when driven off the UI thread ("oh-touch-dispatch" ... 
+    // MethodType$ConcurrentWeakInternSet.get -> abort, signal 6).  ViewRootImpl.enqueueInputEvent()
+    // hands the event to the real input pipeline and hops to the UI thread itself, so we get
+    // main-thread delivery WITHOUT needing a Runnable (and therefore without the OHTouchInjector
+    // class, whose only delivery route — a BCP jar — breaks this child).
+    jobject vriMatch = nullptr, vriFallback = nullptr;
+    // WESTLAKE §406b: hold the decor view in a GLOBAL ref.  As a LOCAL ref it decoded to ART's
+    // poison value 0xdead10c0 on the SECOND tap (SIGSEGV addr=0xdead10c0 inside
+    // art::InvokeVirtualOrInterfaceWithVarArgs -> receiver->GetClass()), because the first tap tears
+    // an Activity down and the local-ref table underneath us is not stable across that.  Also bail
+    // out of the scan if a JNI call leaves an exception pending (mRoots is mutated by the UI thread
+    // while we walk it), instead of continuing with a poisoned env.
+    int chosenRoot = -1, fallbackIdx = -1;   // WESTLAKE §460
     for (jint i = 0; i < nn; ++i) {
         jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
         if (!vri) continue;
         jobject view = env->GetObjectField(vri, mViewF);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); env->DeleteLocalRef(vri); break; }
         if (view) {
-            jboolean f = env->CallBooleanMethod(view, hasFocusM);
-            if (f) decorView = env->NewLocalRef(view);
-            else if (!fallbackView) fallbackView = env->NewLocalRef(view);
+            // §408: an explicit index wins; otherwise prefer a window that is focused OR actually
+            // shown, and only fall back to "the first root that exists".
+            const int want = g_rootIndex.load();
+            jboolean f = JNI_FALSE;
+            if (want >= 0) {
+                f = (i == want) ? JNI_TRUE : JNI_FALSE;
+            } else {
+                f = env->CallBooleanMethod(view, hasFocusM);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); f = JNI_FALSE; }
+                if (!f) {
+                    jmethodID shownM = env->GetMethodID(viewCls, "isShown", "()Z");
+                    if (shownM) { f = env->CallBooleanMethod(view, shownM); }
+                    if (env->ExceptionCheck()) { env->ExceptionClear(); f = JNI_FALSE; }
+                }
+            }
+            if (f) {
+                // WESTLAKE §460: keep the LAST match, not the first. WindowManagerGlobal.mRoots
+                // APPENDS new windows, so the topmost window is the last entry — and a dialog is
+                // always newer than the Activity beneath it. Breaking on the first match sent every
+                // tap to the oldest window, and because a stale/among-stacked window still reports
+                // isShown()==true it happily returned handled=1 while nothing visible happened.
+                // That is why dialog buttons and the volume Slider looked dead.
+                if (decorView) env->DeleteGlobalRef(decorView);
+                if (vriMatch)  env->DeleteGlobalRef(vriMatch);
+                decorView = env->NewGlobalRef(view);
+                vriMatch = env->NewGlobalRef(vri);
+                chosenRoot = (int)i;
+            } else if (!fallbackView) {
+                fallbackView = env->NewGlobalRef(view);
+                vriFallback = env->NewGlobalRef(vri);
+                fallbackIdx = (int)i;
+            }
         }
         if (view) env->DeleteLocalRef(view);
         env->DeleteLocalRef(vri);
-        if (decorView) break;
+        // (no early break — see §460: we want the LAST matching root)
     }
-    if (!decorView) decorView = fallbackView;
+    if (!decorView) { decorView = fallbackView; vriMatch = vriFallback; chosenRoot = fallbackIdx; }
+    else if (fallbackView) { env->DeleteGlobalRef(fallbackView); fallbackView = nullptr; }
     if (!decorView) return fail("no decorView");
+    // WESTLAKE §460: say WHICH window we picked. "handled=1" from the wrong root looks identical to
+    // a working tap, which is what made the dialog-input bug so hard to read.
+    LOGI("dispatchTouchViaViewRoot: chose root[%d] of %d (g_rootIndex=%d)",
+         chosenRoot, (int)nn, g_rootIndex.load());
 
     // --- resolve OHTouchInjector.dispatchTouchOnMain (BCP first, app fallback) ---
+    // WESTLAKE §394: the OHTouchInjector helper is OPTIONAL now.
+    // Injecting that class into a BCP jar breaks this child outright (any extra classesN.dex in a
+    // boot-classpath jar makes initChild die in Process.setArgV0Native — A/B-proven on both
+    // apache-xml.jar and adapter-runtime-bcp.jar), so fall back to calling
+    // View.dispatchTouchEvent(MotionEvent) DIRECTLY via JNI when the helper is absent.
+    // This is possible at all because android_view_MotionEvent_aosp now COMPILES (§393), so
+    // MotionEvent.obtain/nativeInitialize actually exist in this process.
     jclass helperCls = resolveTouchInjector(env, viewCls, decorView);
-    if (!helperCls) return fail("resolveTouchInjector failed");
     jclass meCls = env->FindClass("android/view/MotionEvent");
-    jmethodID dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
-        "(Landroid/view/View;Landroid/view/MotionEvent;)V");
-    if (!dispM || env->ExceptionCheck()) return fail("GetStaticMethodID dispatchTouchOnMain");
+    jmethodID dispM = nullptr;
+    if (helperCls != nullptr) {
+        dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
+            "(Landroid/view/View;Landroid/view/MotionEvent;)V");
+        if (!dispM || env->ExceptionCheck()) { env->ExceptionClear(); dispM = nullptr; }
+    }
+    // WESTLAKE §406: resolve dispatchTouchEvent on the RECEIVER'S OWN class, not on the
+    // android/view/View that FindClass hands this native thread.  Resolving it on View produced an
+    // ArtMethod whose vtable slot does not exist for the DecorView's class in this runtime, so
+    // art::FindVirtualMethod() returned NULL and CallBooleanMethod SEGV'd at addr=0x4
+    // (= ArtMethod::access_flags_, i.e. a null ArtMethod) — that is what killed the child on the
+    // first tap, NOT the touch itself.
+    // §408c: resolve on android/view/View, NOT on the receiver's own class.  GetMethodID on
+    // DecorView's class drives ClassLinker::EnsureInitialized from this injector thread and that
+    // SEGV'd inside mirror::Class::GetDescriptor; View is already initialised and DecorView is a
+    // View, so the virtual dispatch still reaches DecorView's override.
+    jclass recvCls = env->GetObjectClass(decorView);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); recvCls = nullptr; }
+    jmethodID dispDirect = env->GetMethodID(viewCls, "dispatchTouchEvent",
+        "(Landroid/view/MotionEvent;)Z");
+    if (!dispDirect || env->ExceptionCheck()) { env->ExceptionClear(); dispDirect = nullptr; }
+    {   // name the receiver once — invaluable when a dispatch misbehaves
+        jclass clsCls = env->FindClass("java/lang/Class");
+        jmethodID gn = clsCls ? env->GetMethodID(clsCls, "getName", "()Ljava/lang/String;") : nullptr;
+        jstring jn = (gn && recvCls) ? static_cast<jstring>(env->CallObjectMethod(recvCls, gn)) : nullptr;
+        const char* cn = jn ? env->GetStringUTFChars(jn, nullptr) : nullptr;
+        const jboolean isView = recvCls ? env->IsInstanceOf(decorView, viewCls) : JNI_FALSE;
+        LOGI("dispatchTouchViaViewRoot: receiver=%s isView=%d dispDirect=%p",
+             cn ? cn : "?", (int)isView, (void*)dispDirect);
+        if (jn && cn) env->ReleaseStringUTFChars(jn, cn);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+    // §398: ViewRootImpl.enqueueInputEvent(InputEvent) — public, thread-safe, posts to the UI thread.
+    jclass vriCls2 = env->FindClass("android/view/ViewRootImpl");
+    jmethodID enqueueM = nullptr;
+    if (vriCls2 != nullptr) {
+        enqueueM = env->GetMethodID(vriCls2, "enqueueInputEvent", "(Landroid/view/InputEvent;)V");
+        if (!enqueueM || env->ExceptionCheck()) { env->ExceptionClear(); enqueueM = nullptr; }
+    }
+    // WESTLAKE §405b: PREFER the direct View.dispatchTouchEvent.
+    // ViewRootImpl.enqueueInputEvent() looked like the clean route (§398) but it runs the event
+    // through EarlyPostImeInputStage, which calls ViewRootImpl.getAutofillManager() ->
+    // AutofillManager.<init> -> AutofillFeatureFlags.isFillDialogEnabled -> DeviceConfig ->
+    // Settings$NameValueCache.getStringsForPrefix -> UserManager.isUserUnlocked on a NULL
+    // UserManager: an uncaught NPE on the main looper, so ActivityThread.main returns and initChild
+    // exits(1) (`[WESTLAKE-REAP] child ... exited(1)`) on the FIRST tap.  The direct call skips every
+    // input stage, and it is safe now that §404 repaired java.lang.invoke.MethodType (the NPE that
+    // made §397 blame threading).  Set WL_TOUCH_ENQUEUE=1 to go back to the ViewRootImpl route.
+    static const bool wl_useEnqueue = (getenv("WL_TOUCH_ENQUEUE") != nullptr);
+    const bool useEnqueue = wl_useEnqueue && enqueueM && vriMatch;
+    if (useEnqueue) {
+        LOGI("dispatchTouchViaViewRoot: using ViewRootImpl.enqueueInputEvent (WL_TOUCH_ENQUEUE)");
+    }
+    // WESTLAKE §399: force java.lang.invoke.MethodType's static init ONCE before we deliver a touch.
+    // Both dispatch routes (direct View.dispatchTouchEvent and ViewRootImpl.enqueueInputEvent) abort
+    // the child with the SAME NPE — "Attempt to invoke ... MethodType$ConcurrentWeakInternSet.get" —
+    // so this is NOT a wrong-thread problem (that was my earlier reading): noice's Kotlin click
+    // handlers go through MethodHandle/MethodType, and this runtime logs
+    // "[CL] Skipping pre-init + root init (ARM64 standalone)", so MethodType's intern table static is
+    // still null when the lambda machinery first touches it.  JNI FindClass does NOT run <clinit>;
+    // calling a static method does.
+    {
+        static std::atomic<bool> wl_mtInit{false};
+        bool wl_exp = false;
+        if (wl_mtInit.compare_exchange_strong(wl_exp, true)) {
+            // §403: FindClass + a static call was NOT enough — the child log shows ZERO `[CLINIT]`
+            // traces for MethodType even though the class is referenced hundreds of thousands of
+            // times, i.e. it is used while UNINITIALISED, so its `internTable` static stays null and
+            // any lambda/invokedynamic path NPEs in ConcurrentWeakInternSet.get.
+            // Class.forName(name, initialize=true, loader) is the JNI-reachable call that actually
+            // forces <clinit>.
+            {
+                jclass wl_cls = env->FindClass("java/lang/Class");
+                jmethodID wl_fn = wl_cls ? env->GetStaticMethodID(wl_cls, "forName",
+                    "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;") : nullptr;
+                if (wl_fn != nullptr) {
+                    const char* wl_names[] = {"java.lang.invoke.MethodType",
+                                              "java.lang.invoke.MethodHandles",
+                                              "java.lang.invoke.MethodHandle"};
+                    for (const char* wl_n : wl_names) {
+                        jstring wl_s = env->NewStringUTF(wl_n);
+                        jobject wl_c = env->CallStaticObjectMethod(wl_cls, wl_fn, wl_s, JNI_TRUE, nullptr);
+                        const bool wl_exc = env->ExceptionCheck();
+                        if (wl_exc) { env->ExceptionDescribe(); env->ExceptionClear(); }
+                        LOGI("§403 Class.forName(%s, init=true) exc=%d", wl_n, wl_exc ? 1 : 0);
+                        if (wl_c) env->DeleteLocalRef(wl_c);
+                        env->DeleteLocalRef(wl_s);
+                    }
+                }
+            }
+            jclass wl_mt = env->FindClass("java/lang/invoke/MethodType");
+            if (wl_mt != nullptr) {
+                jmethodID wl_mtm = env->GetStaticMethodID(wl_mt, "methodType",
+                    "(Ljava/lang/Class;)Ljava/lang/invoke/MethodType;");
+                if (wl_mtm != nullptr) {
+                    jclass wl_void = env->FindClass("java/lang/Void");
+                    jfieldID wl_tf = wl_void ? env->GetStaticFieldID(wl_void, "TYPE", "Ljava/lang/Class;") : nullptr;
+                    jobject wl_vt = wl_tf ? env->GetStaticObjectField(wl_void, wl_tf) : nullptr;
+                    if (wl_vt != nullptr) {
+                        jobject wl_r = env->CallStaticObjectMethod(wl_mt, wl_mtm, wl_vt);
+                        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+                        if (wl_r) env->DeleteLocalRef(wl_r);
+                    }
+                }
+                jfieldID wl_it = env->GetStaticFieldID(wl_mt, "internTable",
+                    "Ljava/lang/invoke/MethodType$ConcurrentWeakInternSet;");
+                if (env->ExceptionCheck()) { env->ExceptionClear(); wl_it = nullptr; }
+                jobject wl_itv = wl_it ? env->GetStaticObjectField(wl_mt, wl_it) : nullptr;
+                LOGI("§403 MethodType.internTable found=%d null=%d",
+                     wl_it ? 1 : 0, wl_itv == nullptr ? 1 : 0);
+                if (wl_itv) env->DeleteLocalRef(wl_itv);
+            }
+            if (env->ExceptionCheck()) { env->ExceptionClear(); }
+        }
+    }
+    if (!dispDirect || env->ExceptionCheck()) { env->ExceptionClear(); }
+    if (!dispM && !dispDirect) return fail("no touch dispatch path");
+    if (!dispM) {
+        LOGI("dispatchTouchViaViewRoot: using DIRECT View.dispatchTouchEvent (no OHTouchInjector)");
+    }
     jmethodID obtain = env->GetStaticMethodID(meCls, "obtain", "(JJIFFI)Landroid/view/MotionEvent;");
     jmethodID setSrc = env->GetMethodID(meCls, "setSource", "(I)V");
     jclass scCls = env->FindClass("android/os/SystemClock");
@@ -717,23 +1837,62 @@ int32_t OHInputBridge::dispatchTouchViaViewRoot(int32_t action, float x, float y
     // DOWN — direct static call (no reflection)
     jobject down = env->CallStaticObjectMethod(meCls, obtain, T, T, (jint)0, (jfloat)x, (jfloat)y, (jint)0);
     if (down) {
+        // §409b: MotionEvent.obtain goes through our own ported nativeInitialize — read the
+        // coordinates back, because a MotionEvent that carries (0,0) hit-tests against the wrong
+        // view and every tap silently returns handled=0.
+        jmethodID gx = env->GetMethodID(meCls, "getX", "()F");
+        jmethodID gy = env->GetMethodID(meCls, "getY", "()F");
+        jmethodID ga = env->GetMethodID(meCls, "getAction", "()I");
+        if (gx && gy && ga) {
+            LOGI("dispatchTouchViaViewRoot: MotionEvent readback x=%.1f y=%.1f action=%d (asked %.1f,%.1f)",
+                 (double)env->CallFloatMethod(down, gx), (double)env->CallFloatMethod(down, gy),
+                 (int)env->CallIntMethod(down, ga), (double)x, (double)y);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+        }
         env->CallVoidMethod(down, setSrc, (jint)0x1002);
-        env->CallStaticVoidMethod(helperCls, dispM, decorView, down);
+        if (useEnqueue) { env->CallVoidMethod(vriMatch, enqueueM, down); }
+        else if (dispM) { env->CallStaticVoidMethod(helperCls, dispM, decorView, down); }
+        else {
+            // §408b: report whether the view tree consumed it — a delivered-but-unhandled DOWN is
+            // the difference between "input works" and "input goes nowhere".
+            jboolean hd = env->CallBooleanMethod(decorView, dispDirect, down);
+            const bool threwD = wl_report_exception(env, "dispatchTouchViaViewRoot DOWN");
+            LOGI("dispatchTouchViaViewRoot: DOWN handled=%d threw=%d", (int)hd, threwD ? 1 : 0);
+        }
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
         if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); LOGE("dispatchTouchViaViewRoot: DOWN dispatchTouchOnMain THREW"); }
         env->DeleteLocalRef(down);
     }
-    usleep(150 * 1000);
+    // §559: was 150 ms. It must stay ABOVE ViewConfiguration.getTapTimeout() (100 ms) so a
+    // RecyclerView row's postDelayed(CheckForTap) fires and sets PREPRESSED before the UP
+    // arrives -- that is what §405 found empirically. 120 ms keeps that margin and returns
+    // 30 ms per tap.
+    usleep(120 * 1000);
     // UP
     jlong T2 = env->CallStaticLongMethod(scCls, upmM);
     jobject up = env->CallStaticObjectMethod(meCls, obtain, T, T2, (jint)1, (jfloat)x, (jfloat)y, (jint)0);
     if (up) {
         env->CallVoidMethod(up, setSrc, (jint)0x1002);
-        env->CallStaticVoidMethod(helperCls, dispM, decorView, up);
+        if (useEnqueue) { env->CallVoidMethod(vriMatch, enqueueM, up); }
+        else if (dispM) { env->CallStaticVoidMethod(helperCls, dispM, decorView, up); }
+        else {
+            jboolean hu = env->CallBooleanMethod(decorView, dispDirect, up);
+            const bool threwU = wl_report_exception(env, "dispatchTouchViaViewRoot UP");
+            LOGI("dispatchTouchViaViewRoot: UP handled=%d threw=%d", (int)hu, threwU ? 1 : 0);
+        }
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
         if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); LOGE("dispatchTouchViaViewRoot: UP dispatchTouchOnMain THREW"); }
         env->DeleteLocalRef(up);
     }
-    usleep(100 * 1000);  // let the UP run() complete on the UI thread
-    {
+    // §559: was 100 ms. Since §554 the UP is POSTED to the UI thread, so this only has to be
+    // long enough for that post to run before the OHTI counters are read below -- it does not
+    // gate the tap itself, which is already in flight.
+    usleep(50 * 1000);   // let the posted UP run() complete on the UI thread
+    // WESTLAKE §405: these counters live on OHTouchInjector, which is ABSENT on this board (§394
+    // falls back to a direct dispatch).  Reading static fields off a null jclass makes ART abort
+    // ("Runtime aborting..." with no pending exception) — that abort, not the touch, is what killed
+    // the child on every tap.  Only read them when the helper actually resolved.
+    if (helperCls != nullptr) {
         jfieldID rcF = env->GetStaticFieldID(helperCls, "runCount", "I");
         jfieldID lhF = env->GetStaticFieldID(helperCls, "lastHandled", "I");
         jfieldID icF = env->GetStaticFieldID(helperCls, "invokeCount", "I");
@@ -749,7 +1908,9 @@ int32_t OHInputBridge::dispatchTouchViaViewRoot(int32_t action, float x, float y
              (int)ic, (int)rc, (int)lh, exc ? exc : "none");
         if (exs && exc) env->ReleaseStringUTFChars(exs, exc);
     }
-    LOGI("dispatchTouchViaViewRoot: TAP x=%.1f y=%.1f -> OHTouchInjector DOWN+UP (UI thread)", x, y);
+    LOGI("dispatchTouchViaViewRoot: TAP x=%.1f y=%.1f delivered", x, y);
+    if (decorView) env->DeleteGlobalRef(decorView);          // §406b: globals, release them
+    if (vriMatch)  env->DeleteGlobalRef(vriMatch);
     if (needDetach) jvm_->DetachCurrentThread();
     return 0;
 }
@@ -771,6 +1932,7 @@ int32_t OHInputBridge::dispatchDragViaViewRoot(float x1, float y1, float x2, flo
         if (needDetach) jvm_->DetachCurrentThread();
         return -1;
     };
+    wl_ensure_looper(env);            // §411 — before any dispatch
     ensureVelocityTrackerStub(env);
 
     // --- find focused decor view (mView) ---
@@ -792,29 +1954,78 @@ int32_t OHInputBridge::dispatchDragViaViewRoot(float x1, float y1, float x2, flo
     jclass viewCls = env->FindClass("android/view/View");
     jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
     jobject decorView = nullptr, fallbackView = nullptr;
+    jobject vriMatch = nullptr, vriFallback = nullptr;   // §405/§406b: global refs, guarded scan
+    int dragRoot = -1, dragFallbackIdx = -1;   // WESTLAKE §460b
     for (jint i = 0; i < nn; ++i) {
         jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
         if (!vri) continue;
         jobject view = env->GetObjectField(vri, mViewF);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); env->DeleteLocalRef(vri); break; }
         if (view) {
-            jboolean f = env->CallBooleanMethod(view, hasFocusM);
-            if (f) decorView = env->NewLocalRef(view);
-            else if (!fallbackView) fallbackView = env->NewLocalRef(view);
+            // §408: an explicit index wins; otherwise prefer a window that is focused OR actually
+            // shown, and only fall back to "the first root that exists".
+            const int want = g_rootIndex.load();
+            jboolean f = JNI_FALSE;
+            if (want >= 0) {
+                f = (i == want) ? JNI_TRUE : JNI_FALSE;
+            } else {
+                f = env->CallBooleanMethod(view, hasFocusM);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); f = JNI_FALSE; }
+                if (!f) {
+                    jmethodID shownM = env->GetMethodID(viewCls, "isShown", "()Z");
+                    if (shownM) { f = env->CallBooleanMethod(view, shownM); }
+                    if (env->ExceptionCheck()) { env->ExceptionClear(); f = JNI_FALSE; }
+                }
+            }
+            if (f) {
+                dragRoot = (int)i;
+                // WESTLAKE §460b: keep the LAST match — same reason as the tap path. Without this a
+                // drag inside a dialog (the volume Slider) went to the Activity underneath.
+                if (decorView) env->DeleteGlobalRef(decorView);
+                if (vriMatch)  env->DeleteGlobalRef(vriMatch);
+                decorView = env->NewGlobalRef(view);
+                vriMatch = env->NewGlobalRef(vri);
+            }
+            else if (!fallbackView) {
+                fallbackView = env->NewGlobalRef(view);
+                vriFallback = env->NewGlobalRef(vri);
+            }
         }
         if (view) env->DeleteLocalRef(view);
         env->DeleteLocalRef(vri);
-        if (decorView) break;
+        // (no early break — §460b: we want the LAST matching root)
     }
-    if (!decorView) decorView = fallbackView;
+    if (!decorView) { decorView = fallbackView; vriMatch = vriFallback; dragRoot = dragFallbackIdx; }
+    else if (fallbackView) { env->DeleteGlobalRef(fallbackView); fallbackView = nullptr; }
     if (!decorView) return fail("no decorView");
+    LOGI("dispatchDragViaViewRoot: chose root[%d] of %d (g_rootIndex=%d)",
+         dragRoot, (int)nn, g_rootIndex.load());
 
     // --- resolve OHTouchInjector.dispatchTouchOnMain (BCP first, app fallback) ---
+    // WESTLAKE §405: OHTouchInjector is ABSENT on this board and cannot be added (injecting a class
+    // into a BCP jar breaks this child, §393).  Use the same three-tier fallback as
+    // dispatchTouchViaViewRoot so drags/swipes work without it: helper -> ViewRootImpl
+    // .enqueueInputEvent -> direct View.dispatchTouchEvent.  Without this every slider, ViewPager
+    // swipe and scroll in the app is undrivable.
     jclass helperCls = resolveTouchInjector(env, viewCls, decorView);
-    if (!helperCls) return fail("resolveTouchInjector failed");
     jclass meCls = env->FindClass("android/view/MotionEvent");
-    jmethodID dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
-        "(Landroid/view/View;Landroid/view/MotionEvent;)V");
-    if (!dispM || env->ExceptionCheck()) return fail("GetStaticMethodID dispatchTouchOnMain");
+    jmethodID dispM = nullptr;
+    if (helperCls != nullptr) {
+        dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
+            "(Landroid/view/View;Landroid/view/MotionEvent;)V");
+        if (!dispM || env->ExceptionCheck()) { env->ExceptionClear(); dispM = nullptr; }
+    }
+    // §408c: resolve on android/view/View (see the tap path) — GetMethodID on the receiver's own
+    // class runs EnsureInitialized from this thread and SEGV'd in mirror::Class::GetDescriptor.
+    jmethodID dispDirect = env->GetMethodID(viewCls, "dispatchTouchEvent",
+        "(Landroid/view/MotionEvent;)Z");
+    if (!dispDirect || env->ExceptionCheck()) { env->ExceptionClear(); dispDirect = nullptr; }
+    jmethodID enqueueM = env->GetMethodID(vriCls, "enqueueInputEvent", "(Landroid/view/InputEvent;)V");
+    if (!enqueueM || env->ExceptionCheck()) { env->ExceptionClear(); enqueueM = nullptr; }
+    static const bool wl_useEnqueue2 = (getenv("WL_TOUCH_ENQUEUE") != nullptr);
+    const bool useEnqueue = wl_useEnqueue2 && enqueueM && vriMatch;   // §405b: direct by default
+    if (!dispM && !dispDirect && !useEnqueue) return fail("no touch dispatch path");
     jmethodID obtain = env->GetStaticMethodID(meCls, "obtain", "(JJIFFI)Landroid/view/MotionEvent;");
     jmethodID setSrc = env->GetMethodID(meCls, "setSource", "(I)V");
     jclass scCls = env->FindClass("android/os/SystemClock");
@@ -826,7 +2037,9 @@ int32_t OHInputBridge::dispatchDragViaViewRoot(float x1, float y1, float x2, flo
         jobject e = env->CallStaticObjectMethod(meCls, obtain, T, et, action, fx, fy, (jint)0);
         if (e) {
             env->CallVoidMethod(e, setSrc, (jint)0x1002);
-            env->CallStaticVoidMethod(helperCls, dispM, decorView, e);
+            if (useEnqueue) { env->CallVoidMethod(vriMatch, enqueueM, e); }
+            else if (dispM) { env->CallStaticVoidMethod(helperCls, dispM, decorView, e); }
+            else { env->CallBooleanMethod(decorView, dispDirect, e); }
             if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
             env->DeleteLocalRef(e);
         }
@@ -845,6 +2058,8 @@ int32_t OHInputBridge::dispatchDragViaViewRoot(float x1, float y1, float x2, flo
     send((jint)1 /*ACTION_UP*/, (jfloat)x2, (jfloat)y2, T2);
     usleep(100 * 1000);
     LOGI("dispatchDragViaViewRoot: DRAG (%.0f,%.0f)->(%.0f,%.0f) %d steps", x1, y1, x2, y2, STEPS);
+    if (decorView) env->DeleteGlobalRef(decorView);          // §406b
+    if (vriMatch)  env->DeleteGlobalRef(vriMatch);
     if (needDetach) jvm_->DetachCurrentThread();
     return 0;
 }
@@ -870,6 +2085,7 @@ int32_t OHInputBridge::dispatchSingleTouchViaViewRoot(int32_t action, float x, f
         if (needDetach) jvm_->DetachCurrentThread();
         return -1;
     };
+    wl_ensure_looper(env);            // §411 — before any dispatch
     ensureVelocityTrackerStub(env);
     // --- focused decor view (same resolution as dispatchTouchViaViewRoot) ---
     jclass wmgCls = env->FindClass("android/view/WindowManagerGlobal");
@@ -890,28 +2106,63 @@ int32_t OHInputBridge::dispatchSingleTouchViaViewRoot(int32_t action, float x, f
     jclass viewCls = env->FindClass("android/view/View");
     jmethodID hasFocusM = env->GetMethodID(viewCls, "hasWindowFocus", "()Z");
     jobject decorView = nullptr, fallbackView = nullptr;
+    jobject vriMatch = nullptr, vriFallback = nullptr;   // §405/§406b: global refs, guarded scan
     for (jint i = 0; i < nn; ++i) {
         jobject vri = env->CallObjectMethod(roots, getM, i);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
         if (!vri) continue;
         jobject view = env->GetObjectField(vri, mViewF);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); env->DeleteLocalRef(vri); break; }
         if (view) {
-            jboolean f = env->CallBooleanMethod(view, hasFocusM);
-            if (f) decorView = env->NewLocalRef(view);
-            else if (!fallbackView) fallbackView = env->NewLocalRef(view);
+            // §408: an explicit index wins; otherwise prefer a window that is focused OR actually
+            // shown, and only fall back to "the first root that exists".
+            const int want = g_rootIndex.load();
+            jboolean f = JNI_FALSE;
+            if (want >= 0) {
+                f = (i == want) ? JNI_TRUE : JNI_FALSE;
+            } else {
+                f = env->CallBooleanMethod(view, hasFocusM);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); f = JNI_FALSE; }
+                if (!f) {
+                    jmethodID shownM = env->GetMethodID(viewCls, "isShown", "()Z");
+                    if (shownM) { f = env->CallBooleanMethod(view, shownM); }
+                    if (env->ExceptionCheck()) { env->ExceptionClear(); f = JNI_FALSE; }
+                }
+            }
+            if (f) { decorView = env->NewGlobalRef(view); vriMatch = env->NewGlobalRef(vri); }
+            else if (!fallbackView) {
+                fallbackView = env->NewGlobalRef(view);
+                vriFallback = env->NewGlobalRef(vri);
+            }
         }
         if (view) env->DeleteLocalRef(view);
         env->DeleteLocalRef(vri);
         if (decorView) break;
     }
-    if (!decorView) decorView = fallbackView;
+    if (!decorView) { decorView = fallbackView; vriMatch = vriFallback; }
+    else if (fallbackView) { env->DeleteGlobalRef(fallbackView); fallbackView = nullptr; }
     if (!decorView) return fail("no decorView");
     // --- resolve OHTouchInjector.dispatchTouchOnMain (BCP first, app fallback) ---
+    // WESTLAKE §405: same three-tier fallback as the tap/drag paths — the helper class does not
+    // exist on this board, so requiring it made every real-MMI forwarded touch fail.
     jclass helperCls = resolveTouchInjector(env, viewCls, decorView);
-    if (!helperCls) return fail("resolveTouchInjector failed");
     jclass meCls = env->FindClass("android/view/MotionEvent");
-    jmethodID dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
-        "(Landroid/view/View;Landroid/view/MotionEvent;)V");
-    if (!dispM || env->ExceptionCheck()) return fail("GetStaticMethodID dispatchTouchOnMain");
+    jmethodID dispM = nullptr;
+    if (helperCls != nullptr) {
+        dispM = env->GetStaticMethodID(helperCls, "dispatchTouchOnMain",
+            "(Landroid/view/View;Landroid/view/MotionEvent;)V");
+        if (!dispM || env->ExceptionCheck()) { env->ExceptionClear(); dispM = nullptr; }
+    }
+    // §408c: resolve on android/view/View (see the tap path) — GetMethodID on the receiver's own
+    // class runs EnsureInitialized from this thread and SEGV'd in mirror::Class::GetDescriptor.
+    jmethodID dispDirect = env->GetMethodID(viewCls, "dispatchTouchEvent",
+        "(Landroid/view/MotionEvent;)Z");
+    if (!dispDirect || env->ExceptionCheck()) { env->ExceptionClear(); dispDirect = nullptr; }
+    jmethodID enqueueM = env->GetMethodID(vriCls, "enqueueInputEvent", "(Landroid/view/InputEvent;)V");
+    if (!enqueueM || env->ExceptionCheck()) { env->ExceptionClear(); enqueueM = nullptr; }
+    static const bool wl_useEnqueue2 = (getenv("WL_TOUCH_ENQUEUE") != nullptr);
+    const bool useEnqueue = wl_useEnqueue2 && enqueueM && vriMatch;   // §405b: direct by default
+    if (!dispM && !dispDirect && !useEnqueue) return fail("no touch dispatch path");
     jmethodID obtain = env->GetStaticMethodID(meCls, "obtain", "(JJIFFI)Landroid/view/MotionEvent;");
     jmethodID setSrc = env->GetMethodID(meCls, "setSource", "(I)V");
     if (!obtain || !setSrc || env->ExceptionCheck()) return fail("resolve obtain");
@@ -922,10 +2173,14 @@ int32_t OHInputBridge::dispatchSingleTouchViaViewRoot(int32_t action, float x, f
                                             (jint)action, (jfloat)x, (jfloat)y, (jint)0);
     if (e) {
         env->CallVoidMethod(e, setSrc, (jint)0x1002 /* SOURCE_TOUCHSCREEN */);
-        env->CallStaticVoidMethod(helperCls, dispM, decorView, e);
+        if (useEnqueue) { env->CallVoidMethod(vriMatch, enqueueM, e); }
+        else if (dispM) { env->CallStaticVoidMethod(helperCls, dispM, decorView, e); }
+        else { env->CallBooleanMethod(decorView, dispDirect, e); }
         if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); LOGE("dispatchSingleTouch: dispatch THREW"); }
         env->DeleteLocalRef(e);
     }
+    if (decorView) env->DeleteGlobalRef(decorView);          // §406b
+    if (vriMatch)  env->DeleteGlobalRef(vriMatch);
     if (needDetach) jvm_->DetachCurrentThread();
     return 0;
 }
@@ -1347,13 +2602,163 @@ void OHInputBridge::startTapControlChannel() {
     std::thread([]() {
         const char* path = "/data/local/tmp/noice_tap";
         for (;;) {
-            usleep(300 * 1000);
+            // §558: was 300 ms. This poll is on the critical path of EVERY interaction, real
+            // fingers included: touchfwd(1) reads /dev/input and writes this same file, so a
+            // physical tap waited up to 300 ms (avg 150) before the bridge even looked. 25 ms
+            // costs nothing measurable (an idle open()+read() of a tiny tmpfs file) and takes
+            // that straight off perceived latency.
+            usleep(25 * 1000);
             FILE* f = fopen(path, "r");
             if (!f) continue;
             char buf[64] = {0};
             size_t n = fread(buf, 1, sizeof(buf) - 1, f);
             fclose(f);
             if (n == 0) continue;
+            // WESTLAKE §405: non-numeric commands, so the whole app is drivable from the shell:
+            //   echo back > /data/local/tmp/noice_tap     KEYCODE_BACK (leave a detail page)
+            //   echo "x1 y1 x2 y2" > ...                  drag/swipe (ViewPager, sliders, scroll)
+            //   echo "x y" > ...                          tap
+            // §408 window commands:
+            //   echo w        > noice_tap    list every ViewRootImpl (index/class/size/shown)
+            //   echo r2       > noice_tap    aim all later input at root #2 (r-1 = auto)
+            // §563: STREAMING touch. touchfwd only emits on finger LIFT, so nothing happens
+            // while the finger is down (no press feedback) and a drag is replayed as one synthetic
+            // swipe afterwards -- smooth scrolling is impossible by construction. MMI's own
+            // DOWN/MOVE/UP stream would fix it, and dispatchSingleTouchViaViewRoot already exists
+            // for exactly that, but OnInputEvent(PointerEvent) has NEVER fired on this board (the
+            // WMS-focus wall), so that path is dead code. Feed it from the control channel instead:
+            //     d <x> <y>   ACTION_DOWN   (also starts a new downTime)
+            //     m <x> <y>   ACTION_MOVE
+            //     u <x> <y>   ACTION_UP
+            // Opt-in via WL_TOUCH_STREAM=1 in touchfwd; the lift-only tap path is untouched.
+            if ((buf[0]=='d'||buf[0]=='m'||buf[0]=='u') && (buf[1]==' ')) {
+                float sx = 0.f, sy = 0.f;
+                if (sscanf(buf + 1, "%f %f", &sx, &sy) == 2) {
+                    static int64_t s_streamDownNs = 0;
+                    struct timespec ts_;
+                    clock_gettime(CLOCK_MONOTONIC, &ts_);
+                    const int64_t nowNs = (int64_t)ts_.tv_sec * 1000000000LL + ts_.tv_nsec;
+                    int32_t act;
+                    if (buf[0]=='d') { act = 0; s_streamDownNs = nowNs; }
+                    else if (buf[0]=='m') { act = 2; }
+                    else { act = 1; }
+                    if (s_streamDownNs == 0) s_streamDownNs = nowNs;
+                    OHInputBridge::getInstance().dispatchSingleTouchViaViewRoot(
+                        act, sx, sy, s_streamDownNs, nowNs);
+                }
+                FILE* wS = fopen(path, "w"); if (wS) fclose(wS);
+                continue;
+            }
+            if (buf[0] == 'w' || buf[0] == 'W') {
+                FILE* ww = fopen(path, "w"); if (ww) fclose(ww);
+                JNIEnv* denv = nullptr; bool det = false;
+                JavaVM* vm = OHInputBridge::getInstance().javaVm();
+                if (vm != nullptr) {
+                    if (vm->GetEnv(reinterpret_cast<void**>(&denv), JNI_VERSION_1_6) != JNI_OK) {
+                        JavaVMAttachArgs aa{JNI_VERSION_1_6, "oh-root-dump", nullptr};
+                        if (vm->AttachCurrentThread(&denv, &aa) == JNI_OK) det = true; else denv = nullptr;
+                    }
+                    if (denv) { wl_dump_view_roots(denv); if (det) vm->DetachCurrentThread(); }
+                }
+                continue;
+            }
+            if (buf[0] == 'x' || buf[0] == 'X') {     // §438: bytecode-vs-JNI proxy test
+                char c1[96] = {0}, c2[64] = {0}, c3[128] = {0};
+                const int got = sscanf(buf + 1, "%95s %63s %127s", c1, c2, c3);
+                FILE* wx = fopen(path, "w"); if (wx) fclose(wx);
+                if (got != 3) { LOGE("§438 usage: x <class> <method> <sig>"); continue; }
+                JNIEnv* denv = nullptr; bool det = false;
+                JavaVM* vm = OHInputBridge::getInstance().javaVm();
+                if (vm != nullptr) {
+                    if (vm->GetEnv(reinterpret_cast<void**>(&denv), JNI_VERSION_1_6) != JNI_OK) {
+                        JavaVMAttachArgs aa{JNI_VERSION_1_6, "oh-proxy-test", nullptr};
+                        if (vm->AttachCurrentThread(&denv, &aa) == JNI_OK) det = true; else denv = nullptr;
+                    }
+                    if (denv) { wl_proxy_dispatch_test(denv, c1, c2, c3); if (det) vm->DetachCurrentThread(); }
+                }
+                continue;
+            }
+            if (buf[0] == 'p' || buf[0] == 'P') {     // §437: proxy-dispatch probe
+                char cls[128] = {0};
+                if (sscanf(buf + 1, "%127s", cls) != 1) { FILE* wp2 = fopen(path, "w"); if (wp2) fclose(wp2); continue; }
+                FILE* wp2 = fopen(path, "w"); if (wp2) fclose(wp2);
+                JNIEnv* denv = nullptr; bool det = false;
+                JavaVM* vm = OHInputBridge::getInstance().javaVm();
+                if (vm != nullptr) {
+                    if (vm->GetEnv(reinterpret_cast<void**>(&denv), JNI_VERSION_1_6) != JNI_OK) {
+                        JavaVMAttachArgs aa{JNI_VERSION_1_6, "oh-proxy-probe", nullptr};
+                        if (vm->AttachCurrentThread(&denv, &aa) == JNI_OK) det = true; else denv = nullptr;
+                    }
+                    if (denv) { wl_proxy_probe(denv, cls); if (det) vm->DetachCurrentThread(); }
+                }
+                continue;
+            }
+            // §570: mark an app class's methods non-compilable so the JIT skips them.
+            //   echo "J kotlin.coroutines.jvm.internal.ContinuationImpl" > /data/local/tmp/noice_tap
+            // Must run BEFORE the JIT goes live (APPSPAWNX_JIT_DELAY_MS leaves a window for it) —
+            // a method already compiled keeps its compiled entry point.
+            if (buf[0] == 'J') {
+                char cls[192] = {0};
+                if (sscanf(buf + 1, "%191s", cls) != 1) { FILE* wj = fopen(path, "w"); if (wj) fclose(wj); continue; }
+                FILE* wj = fopen(path, "w"); if (wj) fclose(wj);
+                JNIEnv* denv = nullptr; bool det = false;
+                JavaVM* vm = OHInputBridge::getInstance().javaVm();
+                if (vm != nullptr) {
+                    if (vm->GetEnv(reinterpret_cast<void**>(&denv), JNI_VERSION_1_6) != JNI_OK) {
+                        JavaVMAttachArgs aa{JNI_VERSION_1_6, "oh-jit-exclude", nullptr};
+                        if (vm->AttachCurrentThread(&denv, &aa) == JNI_OK) det = true; else denv = nullptr;
+                    }
+                    if (denv) { wl_jit_exclude_class(denv, cls); if (det) vm->DetachCurrentThread(); }
+                }
+                continue;
+            }
+            if (buf[0] == 'q' || buf[0] == 'Q') {     // §433: reflect on an app class
+                char cls[128] = {0};
+                if (sscanf(buf + 1, "%127s", cls) != 1) { FILE* wq = fopen(path, "w"); if (wq) fclose(wq); continue; }
+                FILE* wq = fopen(path, "w"); if (wq) fclose(wq);
+                JNIEnv* denv = nullptr; bool det = false;
+                JavaVM* vm = OHInputBridge::getInstance().javaVm();
+                if (vm != nullptr) {
+                    if (vm->GetEnv(reinterpret_cast<void**>(&denv), JNI_VERSION_1_6) != JNI_OK) {
+                        JavaVMAttachArgs aa{JNI_VERSION_1_6, "oh-class-probe", nullptr};
+                        if (vm->AttachCurrentThread(&denv, &aa) == JNI_OK) det = true; else denv = nullptr;
+                    }
+                    if (denv) { wl_inspect_app_class(denv, cls); if (det) vm->DetachCurrentThread(); }
+                }
+                continue;
+            }
+            if (buf[0] == 'v' || buf[0] == 'V') {     // §409: dump the view hierarchy
+                FILE* wv = fopen(path, "w"); if (wv) fclose(wv);
+                int ri = -1; sscanf(buf + 1, "%d", &ri);
+                JNIEnv* denv = nullptr; bool det = false;
+                JavaVM* vm = OHInputBridge::getInstance().javaVm();
+                if (vm != nullptr) {
+                    if (vm->GetEnv(reinterpret_cast<void**>(&denv), JNI_VERSION_1_6) != JNI_OK) {
+                        JavaVMAttachArgs aa{JNI_VERSION_1_6, "oh-view-dump", nullptr};
+                        if (vm->AttachCurrentThread(&denv, &aa) == JNI_OK) det = true; else denv = nullptr;
+                    }
+                    if (denv) { wl_dump_view_tree(denv, ri); if (det) vm->DetachCurrentThread(); }
+                }
+                continue;
+            }
+            if (buf[0] == 'r' || buf[0] == 'R') {
+                FILE* wr = fopen(path, "w"); if (wr) fclose(wr);
+                int idx = -1;
+                if (sscanf(buf + 1, "%d", &idx) == 1) {
+                    wl_set_root_index(idx);
+                    LOGI("tapControlChannel: input target root=%d", idx);
+                }
+                continue;
+            }
+            if (buf[0] == 'b' || buf[0] == 'B') {
+                FILE* wb = fopen(path, "w"); if (wb) fclose(wb);
+                LOGI("tapControlChannel: BACK key");
+                const int64_t t = 0;
+                OHInputBridge::getInstance().dispatchKeyViaViewRoot(0 /*ACTION_DOWN*/, 4 /*BACK*/, t, t);
+                usleep(60 * 1000);
+                OHInputBridge::getInstance().dispatchKeyViaViewRoot(1 /*ACTION_UP*/, 4 /*BACK*/, t, t);
+                continue;
+            }
             int a = -1, b = -1, c = -1, d = -1;
             int cnt = sscanf(buf, "%d %d %d %d", &a, &b, &c, &d);
             float x = -1.0f, y = -1.0f;
@@ -1431,7 +2836,7 @@ void OHInputBridge::startTextControlChannel() {
             dispatchKeyViaViewRoot(1 /*ACTION_UP*/, code, t, t, meta);
         };
         for (;;) {
-            usleep(250 * 1000);
+            usleep(25 * 1000);   // §558: same reasoning as the tap channel above.
             FILE* f = fopen(path, "r");
             if (!f) continue;
             char buf[512] = {0};
@@ -1464,8 +2869,15 @@ void OHInputBridge::startTextControlChannel() {
             // KeyEvent (KeyCharacterMap-independent). Falls back to per-key
             // dispatch only if the string path reports failure.
             LOGI("textControlChannel: type \"%s\" (%zu chars)", buf, n);
-            if (dispatchCharactersViaViewRoot(buf) != 0) {
-                LOGE("textControlChannel: string path failed, per-key fallback");
+            // §556: PER-KEY IS NOW THE DEFAULT. The string path builds one ACTION_MULTIPLE
+            // KeyEvent carrying the characters — deprecated in API 29, and this runtime's
+            // TextView/Editor never commits it. It nonetheless returned 0 and logged
+            // "-> ViewRootImpl OK", so the per-key fallback never ran and typing silently did
+            // nothing into a focused, in-touch-mode EditText (f=1 ftm=1 itm=1 confirmed).
+            // Set WL_TEXT_STRING=1 to restore the old ACTION_MULTIPLE behaviour.
+            static const bool wl_textString = (getenv("WL_TEXT_STRING") != nullptr);
+            if (!wl_textString || dispatchCharactersViaViewRoot(buf) != 0) {
+                if (wl_textString) LOGE("textControlChannel: string path failed, per-key fallback");
                 for (size_t i = 0; i < n; ++i) {
                     int32_t code; bool shift;
                     if (!charToKey(buf[i], code, shift)) continue;
