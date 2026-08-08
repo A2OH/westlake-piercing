@@ -94,9 +94,56 @@ static void* wl_jit_bench_thread(void*) {
     int rounds = 400, iters = 2000000;
     if (const char* r = getenv("APPSPAWNX_JIT_BENCH_ROUNDS"); r && *r) rounds = atoi(r);
     if (const char* it = getenv("APPSPAWNX_JIT_BENCH_ITERS"); it && *it) iters = atoi(it);
+    {   // §578d: log this thread's real stack geometry so we can compare against SP at the fault
+        pthread_attr_t ga; void* sb = nullptr; size_t sz = 0;
+        if (pthread_getattr_np(pthread_self(), &ga) == 0) {
+            pthread_attr_getstack(&ga, &sb, &sz); pthread_attr_destroy(&ga);
+        }
+        int local;
+        fprintf(stderr, "[JIT-BENCH] stack base=%p size=%zu (lo=%p hi=%p) &local≈SP=%p\n",
+                sb, sz, sb, (void*)((char*)sb + sz), (void*)&local);
+        fflush(stderr);
+    }
     fprintf(stderr, "[JIT-BENCH] START rounds=%d itersPerRound=%d (run/step/mul should get hot)\n",
             rounds, iters); fflush(stderr);
+    // §578c PAUSE mode: run ONE round (triggers compilation via the hot internal loop), then park
+    // forever WITHOUT re-entering the compiled method. This keeps the process alive with the buggy
+    // compiled code sitting in the code cache, so /proc/<pid>/mem can be dumped and the prologue
+    // disassembled. Round 1's normal compiled-entry is what crashes, so we never do it here.
+    if (const char* pz = getenv("APPSPAWNX_JIT_BENCH_PAUSE"); pz && strcmp(pz, "1") == 0) {
+        jlong v = e->CallStaticLongMethod(cls, m, 1, iters);
+        if (e->ExceptionCheck()) { e->ExceptionClear();
+            fprintf(stderr, "[JIT-BENCH] PAUSE: round0 threw (unexpected)\n"); fflush(stderr); }
+        else fprintf(stderr, "[JIT-BENCH] PAUSE: round0 done checksum=%lld — compiled code now in cache\n",
+                     (long long) v);
+        fflush(stderr);
+        // §578c: dump the JIT code-cache mapping to a file IN-PROCESS (survives noice's later death)
+        // so the compiled prologue can be disassembled offline. Find the r-x jit-code-cache range in
+        // /proc/self/maps and copy it out.
+        FILE* mp = fopen("/proc/self/maps", "r");
+        if (mp) {
+            char line[512];
+            while (fgets(line, sizeof line, mp)) {
+                if (strstr(line, "jit-code-cache") && strstr(line, "r-x")) {
+                    unsigned long lo = 0, hi = 0;
+                    if (sscanf(line, "%lx-%lx", &lo, &hi) == 2 && hi > lo) {
+                        size_t len = hi - lo; if (len > (4u<<20)) len = 4u<<20;  // cap 4MB
+                        fprintf(stderr, "[JIT-BENCH] code-cache r-x %lx-%lx (%zu bytes) -> /data/local/tmp/jitcode.bin\n",
+                                lo, hi, len); fflush(stderr);
+                        FILE* out = fopen("/data/local/tmp/jitcode.bin", "wb");
+                        if (out) { fwrite((const void*) lo, 1, len, out); fclose(out);
+                            fprintf(stderr, "[JIT-BENCH] dumped code cache base=0x%lx\n", lo); }
+                        break;
+                    }
+                }
+            }
+            fclose(mp);
+        }
+        fprintf(stderr, "[JIT-BENCH] PARKING\n"); fflush(stderr);
+        for (;;) sleep(3600);
+    }
     for (int r = 0; r < rounds; r++) {
+        if (r < 3) { int local; fprintf(stderr, "[JIT-BENCH] round %d pre-call &local≈SP=%p\n", r, (void*)&local); fflush(stderr); }
         jlong v = e->CallStaticLongMethod(cls, m, 1, iters);   // one internal run() per round
         if (e->ExceptionCheck()) {
             // printStackTrace is a fork-safe noop here, so name the throwable directly.
@@ -116,6 +163,31 @@ static void* wl_jit_bench_thread(void*) {
             }
             fprintf(stderr, "[JIT-BENCH] EXCEPTION at round %d: %s: %s\n", r, cn, msg);
             fflush(stderr);
+            // §578e: name the throw site — where does the SOE actually originate?
+            if (ex != nullptr) {
+                jclass thc = e->FindClass("java/lang/Throwable");
+                jmethodID gst = e->GetMethodID(thc, "getStackTrace", "()[Ljava/lang/StackTraceElement;");
+                jobjectArray fr = gst ? (jobjectArray) e->CallObjectMethod(ex, gst) : nullptr;
+                if (e->ExceptionCheck()) e->ExceptionClear();
+                if (fr) {
+                    jsize fn = e->GetArrayLength(fr); if (fn > 20) fn = 20;
+                    jclass stec = e->FindClass("java/lang/StackTraceElement");
+                    jmethodID gc = e->GetMethodID(stec, "getClassName", "()Ljava/lang/String;");
+                    jmethodID gm = e->GetMethodID(stec, "getMethodName", "()Ljava/lang/String;");
+                    fprintf(stderr, "[JIT-BENCH]   SOE depth=%d, top %d frames:\n", (int) e->GetArrayLength(fr), (int) fn);
+                    for (jsize i = 0; i < fn; ++i) {
+                        jobject st = e->GetObjectArrayElement(fr, i);
+                        jstring jc2 = (jstring) e->CallObjectMethod(st, gc);
+                        jstring jm2 = (jstring) e->CallObjectMethod(st, gm);
+                        const char* c2 = jc2 ? e->GetStringUTFChars(jc2, nullptr) : "?";
+                        const char* m2 = jm2 ? e->GetStringUTFChars(jm2, nullptr) : "?";
+                        fprintf(stderr, "[JIT-BENCH]     at %s.%s\n", c2, m2); fflush(stderr);
+                        if (jc2) { e->ReleaseStringUTFChars(jc2, c2); e->DeleteLocalRef(jc2); }
+                        if (jm2) { e->ReleaseStringUTFChars(jm2, m2); e->DeleteLocalRef(jm2); }
+                        e->DeleteLocalRef(st);
+                    }
+                }
+            }
             vm->DetachCurrentThread(); return nullptr;
         }
         if ((r % 40) == 0) { fprintf(stderr, "[JIT-BENCH] round %d checksum=%lld\n", r, (long long) v); fflush(stderr); }
@@ -553,6 +625,18 @@ static void wl_name_java_method(void* ctx) {
     // never returns. So defer it onto a timer thread instead -- startup runs interpreted (safe),
     // and steady-state (tab switches, scrolling: the part that actually feels slow) gets compiled
     // code. APPSPAWNX_JIT_DELAY_MS=N picks the delay; unset keeps the old immediate behaviour.
+    // §578c HEADLESS mode: the runtime is fully initialized here (BCP loaded, JNIEnv live), but we
+    // do NOT launch noice's ActivityThread. Enable the JIT and run ONLY the compute bench, so noice's
+    // own main thread can never SOE and kill the process before the bench compiles+dumps. This is the
+    // clean, isolated JIT test the whole investigation needed.
+    if (const char* hb = getenv("APPSPAWNX_HEADLESS_BENCH"); hb && strcmp(hb, "1") == 0) {
+        fprintf(stderr, "[JIT-BENCH] HEADLESS: enabling JIT + bench, SKIPPING ActivityThread\n");
+        fflush(stderr);
+        usleep(4000 * 1000);          // let the runtime settle
+        wl_create_jit_after_fork();
+        wl_jit_bench_start();
+        for (;;) pause();             // keep the process alive for the bench thread
+    }
     if (const char* d = getenv("APPSPAWNX_JIT_DELAY_MS"); d != nullptr && *d != '\0') {
         const long ms = strtol(d, nullptr, 10);
         LOGW("[JIT-560] deferring Runtime::CreateJit() by %ld ms (startup stays interpreted)", ms);

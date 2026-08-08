@@ -44,3 +44,37 @@ Inspect the JIT-compiled prologue's stack check: disassemble a compiled method f
 (or read the arm64 codegen path) to see whether it does `str wzr,[sp,#-N]` (implicit probe) or
 `cmp sp, [tr,#stack_end_off]` (explicit), and what limit/register it uses. Then correct the limit
 (Thread::tlsPtr_.stack_end / the compiler's reserved-bytes) so the first compiled frame passes.
+
+## Prologue disassembled (2026-08-08) + geometry — the SOE is SPURIOUS, not a simple bad limit
+Dumped the JIT-compiled WlJitBench.run() from the live code cache (/memfd:jit-cache) via a memread
+helper (jitbench/memread.c) on a headless parked process (APPSPAWNX_HEADLESS_BENCH=1 skips noice's
+ActivityThread so the process stays alive — that removed the confound of noice's main thread dying).
+
+Compiled prologue, BOTH baseline (kind2) and optimized (kind0):
+    sub x16, sp, #0x2000     ; x16 = sp - 8192   (kStackOverflowReservedBytes)
+    ldr wzr, [x16]           ; ART implicit stack-overflow probe
+    ... normal frame setup (small frame ~176-336B) ...
+
+Thread geometry at the fault (logged from the bench thread):
+    stack lo=0x7f0a4da000  hi=0x7f0b4d8000  (16 MB, ONE contiguous rw-p, no internal PROT_NONE)
+    SP at round-1 call ≈ 0x7eeda17648  (near the TOP)
+    => sp-0x2000 is deep inside mapped memory; the probe CANNOT fault on this stack.
+
+SOE stack trace (via getStackTrace in the bench): depth=1, "at WlJitBench.bench" — i.e. thrown at
+the ENTRY of the compiled callee before its frame exists (attributed to the caller).
+
+### Conclusions (correcting the earlier "fix the stack_end limit" plan)
+- It is NOT the implicit probe (stack fully mapped, SP near top).
+- It is NOT a simple wrong Thread::stack_end: the interpreter uses stack_end and round 0 (interpreted)
+  works on the SAME thread/stack.
+- APPSPAWNX_EXPLICIT_CHECKS=1 does NOT change the JIT codegen (prologue identical) — that option is
+  for the AOT compiler; the JIT always emits the implicit probe. So that lever is a dead end.
+- => The SOE is thrown by an EXPLICIT check on the interpreter->compiled INVOKE transition (or in
+  art_quick_invoke_stub / the compiled-entry bridge), spuriously, only when the callee is compiled.
+  round 0 (interp->interp) works; round 1 (interp->COMPILED run) throws at entry.
+
+### NEXT (decisive): instrument ThrowStackOverflowError @0x8574e8
+Binary-patch/trampoline it to log SP, LR (caller), and Thread::stack_end at throw time. That names
+the exact check (implicit fault handler vs explicit invoke-path check) and the limit it used. Then
+correct THAT limit/path. The headless bench is the deterministic reproducer (round 0 OK, round 1
+throws) — no noice, no lottery.
