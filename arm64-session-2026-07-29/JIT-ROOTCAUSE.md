@@ -124,3 +124,28 @@ branch / art_quick_invoke_stub setup) computes the `space` passed to the inlined
 and correct it (it's reading the compiled frame size / required stack wrong — likely a bad field
 offset or a sign/scale error yielding ~stack-size). That is the single value to fix. Reproduce with
 the headless leaf bench (round 0 OK / round 1 SOE); §578 confirms it is NOT the compiled prologue.
+
+## §579 — localized to the INTERPRETER->COMPILED INVOKE TRANSITION (systematic elimination)
+Ruled out, each tested on the headless leaf bench (round 0 OK / round 1 SOE "at bench"):
+ - §578 compiled prologue probe: patched reserved 8192->0, VERIFIED in compiled code, still SOE.
+ - §579 invoke_depth cap (EnterInterpreterFromInvoke @0xaaf4ec cmp#50->#4095): still SOE.
+   (only 1 of 25 cmp#50 sites is an SOE depth-guard; raising it changed nothing.)
+ - §579b bench() marked NON-COMPILABLE (kAccCompileDontBother on its ArtMethod): so INTERPRETED
+   bench calls COMPILED run() in a loop — STILL SOE at round 1. run() compiles (kind1+0), round 0
+   (interp->interp) works, round 1 (interp->COMPILED run) throws.
+
+=> DEFINITIVE: the spurious SOE is thrown on the INTERPRETER->COMPILED invoke transition — an
+interpreted caller invoking a JIT-compiled callee. NOT the callee's prologue (patched away), NOT
+recursion, NOT bench being compiled. OSR entry into the same compiled code works; only the normal
+interp->compiled invoke throws.
+
+### Throw site candidates (next: disassemble + fix)
+ArtInterpreterToCompiledCodeBridge @0xa51870 has NO stack check itself, so the throw is in what it
+calls:
+  - art::ArtMethod::Invoke @0x876c0c  ← has a WESTLAKE emutls `stale_quick_repair_count` (repairs
+    "stale" quick/compiled entry points). Prime suspect: on a freshly-JIT-compiled method it may
+    mis-handle the quick entry / recompute stack wrong.
+  - art_quick_invoke_stub @0xfda330 / art_quick_invoke_stub_internal @0xf9e3dc (hand-written asm).
+Instrument ThrowStackOverflowError @0x8574e8 to log LR (one code-cave trampoline) to pin the exact
+site, then fix. Reproducer: headless leaf bench, APPSPAWNX_JIT_BENCH_NOCOMPILE_OUTER=1 makes it the
+clean interp->compiled case.

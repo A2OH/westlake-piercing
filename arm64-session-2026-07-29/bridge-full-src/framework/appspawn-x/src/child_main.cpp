@@ -94,6 +94,17 @@ static void* wl_jit_bench_thread(void*) {
     int rounds = 400, iters = 2000000;
     if (const char* r = getenv("APPSPAWNX_JIT_BENCH_ROUNDS"); r && *r) rounds = atoi(r);
     if (const char* it = getenv("APPSPAWNX_JIT_BENCH_ITERS"); it && *it) iters = atoi(it);
+    // §579b: optionally mark bench() itself NON-COMPILABLE (kAccCompileDontBother=0x02000000,
+    // access_flags_ at ArtMethod+4; jmethodID IS the ArtMethod*), so the JNI CallStatic always
+    // invokes INTERPRETED bench, which then calls COMPILED run() in its loop — the realistic
+    // "interpreter calls a hot compiled leaf" pattern. Tests whether the SOE is specific to the
+    // JNI-invoke-of-a-COMPILED-callee stack check.
+    if (const char* nb = getenv("APPSPAWNX_JIT_BENCH_NOCOMPILE_OUTER"); nb && strcmp(nb, "1") == 0) {
+        uint32_t* af = reinterpret_cast<uint32_t*>(reinterpret_cast<char*>(m) + 4);
+        *af |= 0x02000000u;
+        fprintf(stderr, "[JIT-BENCH] bench() marked non-compilable (outer stays interpreted)\n");
+        fflush(stderr);
+    }
     {   // §578d: log this thread's real stack geometry so we can compare against SP at the fault
         pthread_attr_t ga; void* sb = nullptr; size_t sz = 0;
         if (pthread_getattr_np(pthread_self(), &ga) == 0) {
