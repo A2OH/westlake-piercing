@@ -149,3 +149,32 @@ calls:
 Instrument ThrowStackOverflowError @0x8574e8 to log LR (one code-cave trampoline) to pin the exact
 site, then fix. Reproducer: headless leaf bench, APPSPAWNX_JIT_BENCH_NOCOMPILE_OUTER=1 makes it the
 clean interp->compiled case.
+
+## ★★★ROOT CAUSE FOUND (2026-08-08): the quick-invoke ABI is a STUB (aborts)
+`art_quick_invoke_stub_internal` — the entrypoint that invokes JIT/AOT-compiled code from
+C++/the interpreter — is a westlake ABORT STUB:
+    art_quick_invoke_stub_internal @0xf9e3dc: fwrite("FATAL: stub entrypoint
+    art_quick_invoke_stub_internal called\n"); abort();
+It is one of only 3 such stubs (also ExecuteMterpImpl, art_quick_invoke_polymorphic_with_hidden_
+receiver). So the westlake port NEVER IMPLEMENTED the quick calling convention — a compiled method
+CANNOT be invoked via the normal path. The only way compiled code runs is **OSR** (on-stack
+replacement patches the interpreter to jump INTO compiled code mid-method, bypassing the stub).
+
+### This explains EVERY symptom of the whole investigation
+ - OSR entry works (round 0): OSR doesn't use the invoke stub.
+ - Normal invoke of a compiled method throws/fails (round 1): westlake routes around the abort stub
+   by forcing interpretation, and that fallback throws the spurious SOE when the callee already has
+   compiled code.
+ - `compiled=0` survivors: nothing compiled => nothing invoked via the missing stub.
+ - noice dies once the JIT compiles its hot methods: they then get invoked normally => broken path.
+ - The compiled prologue probe, invoke_depth cap, `space`, stack_end — ALL red herrings. The stack
+   is fine; the problem is that compiled methods are unreachable by normal call.
+
+### THE REAL FIX (well-defined but substantial)
+Implement art_quick_invoke_stub_internal for arm64 (the quick calling convention): build the quick
+frame, marshal args from the ShadowFrame/arg array per the shorty, set the thread/marking registers,
+`blr` the compiled entry, store the JValue result, tear down. This is the standard AOSP
+quick_entrypoints_arm64 stub — port it into libart via a code cave / a linked-in implementation
+(the deployed libart has room; precedent: binary-patched entrypoints). Until then the JIT can only
+ever help hot LOOPS (OSR), never method-call-heavy code, and enabling it app-wide is unsafe (any
+compiled method that gets normally invoked hits the fallback SOE).
