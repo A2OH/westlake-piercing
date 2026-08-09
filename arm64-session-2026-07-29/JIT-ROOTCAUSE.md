@@ -98,3 +98,29 @@ GenerateStackOverflowCheck). Options, in order:
     misclassified as overflow.
 Reproduce/verify with the headless bench (round 0 OK, round 1 SOE). Instrument ThrowStackOverflow
 Error @0x8574e8 (log LR) only if needed to choose between 1 and 2.
+
+## §578 — codegen probe patched & VERIFIED, but the probe was a RED HERRING
+Patched CodeGeneratorARM64::GenerateFrameEntry @0xb7ee4c: `movz w1,#0x2000`->`movz w1,#0`
+(reserved bytes 8192->0), so the JIT emits `sub temp,sp,#0; ldr wzr,[temp]` == `ldr [sp]` (SP is
+always mapped, can never fault). VERIFIED in freshly-compiled code: prologue is now
+`d10003f0 (sub x16,sp,#0); b940021f (ldr wzr,[x16])`.
+RESULT: the headless leaf bench STILL throws StackOverflowError at round 1. So the compiled
+prologue probe is NOT the cause. (recipes/patch578.py; reverted from the deployed baseline.)
+
+## The REAL culprit: an inlined explicit CheckStackOverflow on the interp->COMPILED invoke path
+interpreter::CheckStackOverflow @0xa51268 (inlined into the invoke path, no direct callers):
+    x9 = self->stack_end_           ; [Thread+160]
+    x8 = runtime[+1353] (a byte)    ; reserved-units
+    x19 = stack_end + (x8<<13) + space(x1)
+    if (SP < x19) ThrowStackOverflowError
+Round 0 (interp->interp run) passes; round 1 (interp->COMPILED run) throws. Same thread, same
+stack_end, same runtime byte — so the differing term is **space (x1)**: the interpreter reserves a
+spuriously huge `space` when the callee is COMPILED, so SP(near top) < stack_end + reserved + space
+=> spurious SOE. The runtime[+1353] byte is NOT globally huge (round 0 uses it and passes).
+
+### NEXT (the actual fix)
+Find where the interp->compiled invoke path (ArtInterpreterToCompiledCodeBridge / DoCall's compiled
+branch / art_quick_invoke_stub setup) computes the `space` passed to the inlined CheckStackOverflow,
+and correct it (it's reading the compiled frame size / required stack wrong — likely a bad field
+offset or a sign/scale error yielding ~stack-size). That is the single value to fix. Reproduce with
+the headless leaf bench (round 0 OK / round 1 SOE); §578 confirms it is NOT the compiled prologue.
