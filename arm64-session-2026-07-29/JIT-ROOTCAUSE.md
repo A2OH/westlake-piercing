@@ -196,3 +196,36 @@ Instrument ThrowStackOverflowError @0x8574e8 with a code-cave trampoline that lo
 write(2,...) syscall, run the headless bench (deterministic: round 0 OK / round 1 SOE), and read the
 caller address. That NAMES the throwing instruction directly — every indirect deduction this session
 has been wrong at least once, so only direct capture should be trusted from here.
+
+## ★★★THE ACTUAL MECHANISM (2026-08-08, via LR capture — the reliable method finally used)
+Instrumented ThrowStackOverflowError @0x8574e8 with a code-cave trampoline (recipes/patch580.py +
+cave.s) that logs the caller's LR to stderr. Ran the headless bench. Captured LR=runtime 0x7fbced19f4;
+libart base 0x7fbc480000 => **file vaddr 0xa519f4**, inside ArtInterpreterToCompiledCodeBridge,
+right after `bl ArtInterpreterToInterpreterBridge` (the SOE is a tail-throw from inside it).
+
+So for a COMPILED callee, ArtInterpreterToCompiledCodeBridge @0xa51870 does NOT run the compiled
+code — it REDIRECTS to ArtInterpreterToInterpreterBridge @0xabaf84 (force-interpret). That bridge's
+stack check @0xabafb4:
+    ldr x8,[self,#160]=stack_end ; ldrb w9,[runtime,#1353] ; add x8,x8,w9,lsl#13 ; cmp x29,x8 ; b.lo throw
+fires spuriously (self->stack_end_ is wrong-high for the thread; SP is actually near the top).
+
+### §581: neutralizing that b.lo (@0xabafb8 -> nop) REMOVES the SOE
+Confirmed on the bench: round 1 no longer throws (SOE=0). BUT it then HANGS (round 1 never completes,
+process alive, no progress) — because the force-interpret path re-interprets the already-compiled
+run() and (likely) loops on OSR-into-already-compiled. So neutralizing the check only moves the
+symptom.
+
+### THE REAL PICTURE
+westlake's ArtInterpreterToCompiledCodeBridge FORCE-INTERPRETS compiled methods instead of invoking
+their compiled code. Consequences:
+ - The JIT provides ZERO benefit on normal method calls (they're re-interpreted).
+ - Only OSR ever runs compiled code (hot loops within one method).
+ - The force-interpret path is buggy: spurious SOE (the stack check), and a hang when the target is
+   already compiled.
+
+### THE REAL FIX
+Make ArtInterpreterToCompiledCodeBridge actually invoke the compiled code (call the REAL
+art_quick_invoke_stub @0xfda330 with the method's quick entry point) for compiled callees, instead of
+redirecting to ArtInterpreterToInterpreterBridge. That is the change that makes the JIT actually run
+under load. Next: examine the bridge's interpret-vs-compiled decision (0xa518a4..0xa51934) and route
+compiled methods to the quick stub. Reproducer: headless bench.
