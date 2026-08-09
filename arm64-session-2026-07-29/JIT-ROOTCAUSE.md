@@ -178,3 +178,21 @@ quick_entrypoints_arm64 stub — port it into libart via a code cave / a linked-
 (the deployed libart has room; precedent: binary-patched entrypoints). Until then the JIT can only
 ever help hot LOOPS (OSR), never method-call-heavy code, and enabling it app-wide is unsafe (any
 compiled method that gets normally invoked hits the fallback SOE).
+
+## ⛔CORRECTION (2026-08-08): the "abort-stub root cause" was WRONG
+art_quick_invoke_stub_internal @0xf9e3dc (the abort stub) has ZERO callers — it is DEAD code, an
+unused alternate entry that was safely stubbed. ArtMethod::Invoke @0x876c0c calls the REAL,
+fully-implemented art_quick_invoke_stub @0xfda330 (bl at 0x876d44), which marshals args by shorty
+and calls the compiled entry — and it NEVER calls ThrowStackOverflowError (verified: 0 throw calls
+in 0xfda330..0xfda5e0). So the quick-invoke ABI IS implemented and IS used; implementing _internal
+would fix nothing.
+
+=> The SOE root cause is STILL NOT identified. Disproven theories this session, each with evidence:
+   recursion, the compiled prologue probe (§578, patched+verified), the invoke_depth cap (§579),
+   the "space"/CheckStackOverflow term, AND the abort-stub. Do NOT build on any of them.
+
+### The one reliable next step (stop guessing)
+Instrument ThrowStackOverflowError @0x8574e8 with a code-cave trampoline that logs LR (x30) via a
+write(2,...) syscall, run the headless bench (deterministic: round 0 OK / round 1 SOE), and read the
+caller address. That NAMES the throwing instruction directly — every indirect deduction this session
+has been wrong at least once, so only direct capture should be trusted from here.
