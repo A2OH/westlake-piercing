@@ -2637,6 +2637,25 @@ static void wl_register_tls_natives(JNIEnv* env) {
     env->DeleteLocalRef(cls);
 }
 
+// WESTLAKE §611d — libcore.io.Linux.memfd_create was never bound (same §424 class:
+// libjavacore isn't loaded on this stack). First caller found: Material Catalog startup
+// via android.os.SharedMemory. Straight syscall; null return on failure matches the
+// file's existing convention (callers treat it as an ErrnoException-shaped failure).
+static jobject WL_Linux_memfd_create(JNIEnv* env, jobject, jstring jname, jint flags) {
+    const char* name = jname ? env->GetStringUTFChars(jname, nullptr) : nullptr;
+    const int fd = static_cast<int>(::syscall(__NR_memfd_create,
+                                              name ? name : "wl_memfd",
+                                              static_cast<unsigned>(flags)));
+    const int err = errno;
+    if (jname && name) env->ReleaseStringUTFChars(jname, name);
+    if (fd < 0) {
+        fprintf(stderr, "[WESTLAKE-611] memfd_create failed errno=%d\n", err);
+        fflush(stderr);
+        return nullptr;
+    }
+    return wl_new_fd(env, fd);
+}
+
 static void wl_register_dns_native(JNIEnv* env) {
     jclass linuxCls = env->FindClass("libcore/io/Linux");
     if (!linuxCls || env->ExceptionCheck()) {
@@ -2667,8 +2686,10 @@ static void wl_register_dns_native(JNIEnv* env) {
         {"getsockname", "(Ljava/io/FileDescriptor;)Ljava/net/SocketAddress;",
          reinterpret_cast<void*>(WL_Linux_getsockname)},
         {"poll", "([Landroid/system/StructPollfd;I)I", reinterpret_cast<void*>(WL_Linux_poll)},
+        {"memfd_create", "(Ljava/lang/String;I)Ljava/io/FileDescriptor;",
+         reinterpret_cast<void*>(WL_Linux_memfd_create)},
     };
-    const jint rc = env->RegisterNatives(linuxCls, m, 12);
+    const jint rc = env->RegisterNatives(linuxCls, m, 13);
     if (env->ExceptionCheck()) env->ExceptionClear();
     fprintf(stderr, "[WESTLAKE-423] RegisterNatives(Linux.android_getaddrinfo) rc=%d\n", (int)rc);
     fflush(stderr);

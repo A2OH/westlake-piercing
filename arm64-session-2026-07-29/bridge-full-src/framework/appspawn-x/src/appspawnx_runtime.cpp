@@ -302,6 +302,26 @@ int AppSpawnXRuntime::startVm() {
         options.push_back(makeOption("-Xint"));
         LOGW("ART INTERPRETER MODE FORCED via APPSPAWNX_FORCE_INT=1");
     }
+    // 2026-08-12 §611: generic java system-property injection. Colon-separated key=value
+    // list, each becomes a -Dkey=value runtime option. First use: user.dir is never seeded
+    // on this port (libcore specialProperties gap), so any relative File.getAbsoluteFile()
+    // NPEs (caught via the catalog's jacoco FileOutput.startup).
+    if (const char* v = getenv("APPSPAWNX_DPROPS"); v && *v) {
+        static std::vector<std::string> dpropHold;  // makeOption keeps raw pointers
+        std::string s(v);
+        size_t p = 0;
+        while (p <= s.size()) {
+            size_t q = s.find(':', p);
+            std::string kv = s.substr(p, q == std::string::npos ? std::string::npos : q - p);
+            if (!kv.empty()) {
+                dpropHold.push_back("-D" + kv);
+                options.push_back(makeOption(dpropHold.back().c_str()));
+                LOGW("ASX java property injected: -D%s", kv.c_str());
+            }
+            if (q == std::string::npos) break;
+            p = q + 1;
+        }
+    }
 
     // 2026-05-02 G2.14r DIAGNOSTIC: enable ART CheckJNI when an abort happens
     // without printable FATAL message (raise(SIGABRT) directly, no stderr dump).
