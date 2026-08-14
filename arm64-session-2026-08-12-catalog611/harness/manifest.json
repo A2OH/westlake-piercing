@@ -1,0 +1,2436 @@
+{
+ "toc": {
+  "Adaptive": [
+   0,
+   89,
+   411
+  ],
+  "Bottom App Bar": [
+   0,
+   736,
+   411
+  ],
+  "Bottom Sheet": [
+   0,
+   120,
+   771
+  ],
+  "Buttons": [
+   0,
+   682,
+   771
+  ],
+  "Cards": [
+   0,
+   68,
+   1131
+  ],
+  "Carousel": [
+   0,
+   687,
+   1131
+  ],
+  "Checkbox": [
+   0,
+   95,
+   1491
+  ],
+  "Chips": [
+   0,
+   667,
+   1491
+  ],
+  "Color": [
+   1,
+   66,
+   1201
+  ],
+  "Date Picker": [
+   1,
+   705,
+   1201
+  ],
+  "Dialogs": [
+   1,
+   80,
+   1561
+  ],
+  "Divider": [
+   1,
+   677,
+   1561
+  ],
+  "Elevation and Shadow": [
+   2,
+   174,
+   1271
+  ],
+  "Floating Action Button": [
+   2,
+   777,
+   1271
+  ],
+  "Image View": [
+   2,
+   106,
+   1631
+  ],
+  "Menus": [
+   2,
+   674,
+   1631
+  ],
+  "Navigation Bar (Bottom Navigation)": [
+   3,
+   262,
+   1341
+  ],
+  "Navigation Drawer": [
+   3,
+   750,
+   1341
+  ],
+  "Navigation Rail": [
+   3,
+   129,
+   1701
+  ],
+  "Progress Indicator": [
+   3,
+   748,
+   1701
+  ],
+  "Radio Button": [
+   4,
+   116,
+   1411
+  ],
+  "Search": [
+   4,
+   675,
+   1411
+  ],
+  "Shape Theming": [
+   5,
+   131,
+   1121
+  ],
+  "Side Sheet": [
+   5,
+   699,
+   1121
+  ],
+  "Slider": [
+   5,
+   68,
+   1481
+  ],
+  "Switch": [
+   5,
+   674,
+   1481
+  ],
+  "Tabs": [
+   6,
+   61,
+   1191
+  ],
+  "Text Field": [
+   6,
+   693,
+   1191
+  ],
+  "Time Picker": [
+   6,
+   106,
+   1551
+  ],
+  "Top App Bar": [
+   6,
+   711,
+   1551
+  ],
+  "Transition": [
+   7,
+   94,
+   1719
+  ],
+  "Typography": [
+   7,
+   707,
+   1719
+  ]
+ },
+ "demos": {
+  "Bottom App Bar": {
+   "nav": [
+    0,
+    736,
+    411
+   ],
+   "row": [
+    600,
+    471
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 494,
+     "y": 267,
+     "act": "tap",
+     "txt": "Show Fab"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 710,
+     "y": 267,
+     "act": "tap",
+     "txt": "Hide Fab"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 599,
+     "y": 379,
+     "act": "tap",
+     "txt": "Hide bottom app bar on s"
+    },
+    {
+     "cls": "AppCompatImageButton",
+     "x": 56,
+     "y": 1840,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ActionMenuItemView",
+     "x": 952,
+     "y": 1840,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1048,
+     "y": 1840,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1144,
+     "y": 1840,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 600,
+     "y": 1864,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "NavigationMenuItemView",
+     "x": 600,
+     "y": 2080,
+     "act": "tap",
+     "txt": ""
+    }
+   ]
+  },
+  "Bottom Sheet": {
+   "nav": [
+    0,
+    120,
+    771
+   ],
+   "row": [
+    600,
+    471
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 267,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 422,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 577,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 732,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 887,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1042,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 456,
+     "y": 1213,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 555,
+     "y": 1213,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 651,
+     "y": 1213,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 747,
+     "y": 1213,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 1398,
+     "act": "tap",
+     "txt": "Toggleable Icon Buttons"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 1526,
+     "act": "tap",
+     "txt": "Enabled"
+    }
+   ]
+  },
+  "Buttons": {
+   "nav": [
+    0,
+    682,
+    771
+   ],
+   "row": [
+    600,
+    471
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialCardView",
+     "x": 600,
+     "y": 1176,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialCardView",
+     "x": 600,
+     "y": 1592,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialCardView",
+     "x": 600,
+     "y": 2008,
+     "act": "tap",
+     "txt": ""
+    }
+   ]
+  },
+  "Cards": {
+   "nav": [
+    0,
+    68,
+    1131
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 110,
+     "y": 254,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 305,
+     "y": 254,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 500,
+     "y": 254,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 600,
+     "y": 558,
+     "act": "tap",
+     "txt": "Check this checkbox to c"
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 600,
+     "y": 951,
+     "act": "tap",
+     "txt": "Parent checkbox"
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 608,
+     "y": 1047,
+     "act": "tap",
+     "txt": "Child checkbox"
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 608,
+     "y": 1143,
+     "act": "tap",
+     "txt": "Child checkbox"
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 608,
+     "y": 1239,
+     "act": "tap",
+     "txt": "Child checkbox"
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 64,
+     "y": 1407,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialCheckBox",
+     "x": 600,
+     "y": 1537,
+     "act": "tap",
+     "txt": "Check this checkbox to c"
+    }
+   ]
+  },
+  "Carousel": {
+   "nav": [
+    0,
+    687,
+    1131
+   ],
+   "row": [
+    600,
+    471
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "Chip",
+     "x": 730,
+     "y": 330,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 728,
+     "y": 458,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 706,
+     "y": 586,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 692,
+     "y": 714,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 692,
+     "y": 842,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 710,
+     "y": 970,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 710,
+     "y": 1098,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 692,
+     "y": 1232,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 692,
+     "y": 1360,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "Chip",
+     "x": 692,
+     "y": 1488,
+     "act": "tap",
+     "txt": "Hello, World!"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 599,
+     "y": 1638,
+     "act": "tap",
+     "txt": "Long text"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 599,
+     "y": 1766,
+     "act": "tap",
+     "txt": "Enabled"
+    }
+   ]
+  },
+  "Checkbox": {
+   "nav": [
+    0,
+    95,
+    1491
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 599,
+     "y": 192,
+     "act": "tap",
+     "txt": "Launch Material Date Pic"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 154,
+     "y": 363,
+     "act": "tap",
+     "txt": "Single Date"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 415,
+     "y": 363,
+     "act": "tap",
+     "txt": "Date Range"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 121,
+     "y": 550,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 114,
+     "y": 646,
+     "act": "tap",
+     "txt": "Dialog"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 144,
+     "y": 742,
+     "act": "tap",
+     "txt": "Fullscreen"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 123,
+     "y": 838,
+     "act": "tap",
+     "txt": "Custom"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 121,
+     "y": 1025,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 330,
+     "y": 1025,
+     "act": "tap",
+     "txt": "This year"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 586,
+     "y": 1025,
+     "act": "tap",
+     "txt": "Within 1 year"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 121,
+     "y": 1212,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 172,
+     "y": 1308,
+     "act": "tap",
+     "txt": "Today onward"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 142,
+     "y": 1404,
+     "act": "tap",
+     "txt": "Weekdays"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 165,
+     "y": 1500,
+     "act": "tap",
+     "txt": "Last 2 weeks"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 177,
+     "y": 1596,
+     "act": "tap",
+     "txt": "Multiple range"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 121,
+     "y": 1783,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 318,
+     "y": 1783,
+     "act": "tap",
+     "txt": "Custom"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 590,
+     "y": 1783,
+     "act": "tap",
+     "txt": "With Description"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 121,
+     "y": 1970,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 318,
+     "y": 1970,
+     "act": "tap",
+     "txt": "Custom"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 121,
+     "y": 2157,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 318,
+     "y": 2157,
+     "act": "tap",
+     "txt": "Custom"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 121,
+     "y": 2344,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 305,
+     "y": 2344,
+     "act": "tap",
+     "txt": "Today"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 524,
+     "y": 2344,
+     "act": "tap",
+     "txt": "Next Month"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 121,
+     "y": 2531,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 305,
+     "y": 2531,
+     "act": "tap",
+     "txt": "Today"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 524,
+     "y": 2531,
+     "act": "tap",
+     "txt": "Next Month"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 133,
+     "y": 2718,
+     "act": "tap",
+     "txt": "Calendar"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 361,
+     "y": 2718,
+     "act": "tap",
+     "txt": "Text Input"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 106,
+     "y": 2905,
+     "act": "tap",
+     "txt": "None"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 264,
+     "y": 2905,
+     "act": "tap",
+     "txt": "Dots"
+    },
+    {
+     "cls": "MaterialRadioButton",
+     "x": 461,
+     "y": 2905,
+     "act": "tap",
+     "txt": "Highlights"
+    }
+   ]
+  },
+  "Chips": {
+   "nav": [
+    0,
+    667,
+    1491
+   ],
+   "row": [
+    600,
+    471
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 192,
+     "act": "tap",
+     "txt": "AppCompat AlertDialog"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 288,
+     "act": "tap",
+     "txt": "Message, 2 Actions"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 384,
+     "act": "tap",
+     "txt": "Long Message, 2 Actions"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 480,
+     "act": "tap",
+     "txt": "Title, 2 Actions"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 576,
+     "act": "tap",
+     "txt": "Title, Message, 3 Long A"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 672,
+     "act": "tap",
+     "txt": "Long Title, Message, Ove"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 768,
+     "act": "tap",
+     "txt": "Icon, Title, Message, 2 "
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 864,
+     "act": "tap",
+     "txt": "Icon, Title, Message, 2 "
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 960,
+     "act": "tap",
+     "txt": "Edit Text"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1056,
+     "act": "tap",
+     "txt": "Items list"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1152,
+     "act": "tap",
+     "txt": "Multi-select list"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1248,
+     "act": "tap",
+     "txt": "Single select list"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1344,
+     "act": "tap",
+     "txt": "Custom View"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1440,
+     "act": "tap",
+     "txt": "Scrolling Content, Title"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1536,
+     "act": "tap",
+     "txt": "Scrolling Content"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1632,
+     "act": "tap",
+     "txt": "Short Buttons"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1728,
+     "act": "tap",
+     "txt": "Icon, Title, Message, 2 "
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 1824,
+     "act": "tap",
+     "txt": "Icon, Title, Message, 2 "
+    }
+   ]
+  },
+  "Color": {
+   "nav": [
+    1,
+    66,
+    1201
+   ],
+   "row": [
+    600,
+    571
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 445,
+     "y": 1810,
+     "act": "tap",
+     "txt": "Increase Elevation"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 749,
+     "y": 1810,
+     "act": "tap",
+     "txt": "Decrease Elevation"
+    }
+   ]
+  },
+  "Date Picker": {
+   "nav": [
+    1,
+    705,
+    1201
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 408,
+     "y": 278,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 560,
+     "y": 278,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 752,
+     "y": 278,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 408,
+     "y": 588,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 560,
+     "y": 588,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 752,
+     "y": 588,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 408,
+     "y": 898,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 560,
+     "y": 898,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 752,
+     "y": 898,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 408,
+     "y": 1208,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 560,
+     "y": 1208,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 752,
+     "y": 1208,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 408,
+     "y": 1518,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 560,
+     "y": 1518,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "FloatingActionButton",
+     "x": 752,
+     "y": 1518,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 464,
+     "y": 1872,
+     "act": "tap",
+     "txt": "Hide FABs"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 723,
+     "y": 1872,
+     "act": "tap",
+     "txt": "Rotate FABs"
+    }
+   ]
+  },
+  "Dialogs": {
+   "nav": [
+    1,
+    80,
+    1561
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": []
+  },
+  "Divider": {
+   "nav": [
+    1,
+    677,
+    1561
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    }
+   ]
+  },
+  "Elevation and Shadow": {
+   "nav": [
+    2,
+    174,
+    1271
+   ],
+   "row": [
+    600,
+    471
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "NavigationRailItemView",
+     "x": 80,
+     "y": 204,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "NavigationRailItemView",
+     "x": 80,
+     "y": 325,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "NavigationRailItemView",
+     "x": 80,
+     "y": 447,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 679,
+     "y": 230,
+     "act": "tap",
+     "txt": "Add destination"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 679,
+     "y": 326,
+     "act": "tap",
+     "txt": "Remove destination"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 679,
+     "y": 422,
+     "act": "tap",
+     "txt": "+Badge number"
+    },
+    {
+     "cls": "AppCompatSpinner",
+     "x": 768,
+     "y": 518,
+     "act": "tap",
+     "txt": ""
+    }
+   ]
+  },
+  "Floating Action Button": {
+   "nav": [
+    2,
+    777,
+    1271
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 428,
+     "act": "tap",
+     "txt": "Determinate Mode"
+    },
+    {
+     "cls": "AppCompatEditText",
+     "x": 502,
+     "y": 575,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1070,
+     "y": 584,
+     "act": "tap",
+     "txt": "Update"
+    }
+   ]
+  },
+  "Image View": {
+   "nav": [
+    2,
+    106,
+    1631
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 421,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 421,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 642,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 642,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    }
+   ]
+  },
+  "Menus": {
+   "nav": [
+    2,
+    674,
+    1631
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": []
+  },
+  "Navigation Bar (Bottom Navigation)": {
+   "nav": [
+    3,
+    262,
+    1341
+   ],
+   "row": [
+    600,
+    471
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 230,
+     "act": "tap",
+     "txt": "Add nav item"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 600,
+     "y": 326,
+     "act": "tap",
+     "txt": "Remove nav item"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 599,
+     "y": 422,
+     "act": "tap",
+     "txt": "+Badge number"
+    },
+    {
+     "cls": "AppCompatSpinner",
+     "x": 688,
+     "y": 518,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "BottomNavigationItemView",
+     "x": 262,
+     "y": 1840,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "BottomNavigationItemView",
+     "x": 599,
+     "y": 1840,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "BottomNavigationItemView",
+     "x": 936,
+     "y": 1840,
+     "act": "tap",
+     "txt": ""
+    }
+   ]
+  },
+  "Navigation Drawer": {
+   "nav": [
+    3,
+    750,
+    1341
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 146,
+     "y": 249,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 413,
+     "y": 249,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 554,
+     "act": "tap",
+     "txt": "Turn this switch On to c"
+    },
+    {
+     "cls": "SwitchMaterial",
+     "x": 139,
+     "y": 939,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "SwitchMaterial",
+     "x": 392,
+     "y": 939,
+     "act": "tap",
+     "txt": "Enabled"
+    }
+   ]
+  },
+  "Navigation Rail": {
+   "nav": [
+    3,
+    129,
+    1701
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 234,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 405,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 565,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 731,
+     "act": "type",
+     "txt": ""
+    }
+   ]
+  },
+  "Progress Indicator": {
+   "nav": [
+    3,
+    748,
+    1701
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 171,
+     "y": 711,
+     "act": "tap",
+     "txt": "Select Time"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 426,
+     "y": 267,
+     "act": "tap",
+     "txt": "System"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 607,
+     "y": 267,
+     "act": "tap",
+     "txt": "12H"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 781,
+     "y": 267,
+     "act": "tap",
+     "txt": "24H"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 404,
+     "y": 487,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 585,
+     "y": 487,
+     "act": "tap",
+     "txt": "Clock"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 781,
+     "y": 487,
+     "act": "tap",
+     "txt": "Keyboard"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 615,
+     "act": "tap",
+     "txt": "Use Framework Time Picke"
+    }
+   ]
+  },
+  "Radio Button": {
+   "nav": [
+    4,
+    116,
+    1411
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 234,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 405,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 565,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 731,
+     "act": "type",
+     "txt": ""
+    }
+   ]
+  },
+  "Search": {
+   "nav": [
+    4,
+    675,
+    1411
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 171,
+     "y": 711,
+     "act": "tap",
+     "txt": "Select Time"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 426,
+     "y": 267,
+     "act": "tap",
+     "txt": "System"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 607,
+     "y": 267,
+     "act": "tap",
+     "txt": "12H"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 781,
+     "y": 267,
+     "act": "tap",
+     "txt": "24H"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 404,
+     "y": 487,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 585,
+     "y": 487,
+     "act": "tap",
+     "txt": "Clock"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 781,
+     "y": 487,
+     "act": "tap",
+     "txt": "Keyboard"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 615,
+     "act": "tap",
+     "txt": "Use Framework Time Picke"
+    }
+   ]
+  },
+  "Shape Theming": {
+   "nav": [
+    5,
+    131,
+    1121
+   ],
+   "row": [
+    600,
+    721
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "Slider",
+     "x": 600,
+     "y": 272,
+     "act": "slide",
+     "txt": ""
+    },
+    {
+     "cls": "RangeSlider",
+     "x": 600,
+     "y": 432,
+     "act": "slide",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 120,
+     "y": 560,
+     "act": "tap",
+     "txt": "Set"
+    }
+   ]
+  },
+  "Side Sheet": {
+   "nav": [
+    5,
+    699,
+    1121
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 146,
+     "y": 249,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 413,
+     "y": 249,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 554,
+     "act": "tap",
+     "txt": "Turn this switch On to c"
+    },
+    {
+     "cls": "SwitchMaterial",
+     "x": 139,
+     "y": 939,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "SwitchMaterial",
+     "x": 392,
+     "y": 939,
+     "act": "tap",
+     "txt": "Enabled"
+    }
+   ]
+  },
+  "Slider": {
+   "nav": [
+    5,
+    68,
+    1481
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 234,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 405,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 565,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 731,
+     "act": "type",
+     "txt": ""
+    }
+   ]
+  },
+  "Switch": {
+   "nav": [
+    5,
+    674,
+    1481
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 171,
+     "y": 711,
+     "act": "tap",
+     "txt": "Select Time"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 426,
+     "y": 267,
+     "act": "tap",
+     "txt": "System"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 607,
+     "y": 267,
+     "act": "tap",
+     "txt": "12H"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 781,
+     "y": 267,
+     "act": "tap",
+     "txt": "24H"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 404,
+     "y": 487,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 585,
+     "y": 487,
+     "act": "tap",
+     "txt": "Clock"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 781,
+     "y": 487,
+     "act": "tap",
+     "txt": "Keyboard"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 615,
+     "act": "tap",
+     "txt": "Use Framework Time Picke"
+    }
+   ]
+  },
+  "Tabs": {
+   "nav": [
+    6,
+    61,
+    1191
+   ],
+   "row": [
+    600,
+    721
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "Slider",
+     "x": 600,
+     "y": 272,
+     "act": "slide",
+     "txt": ""
+    },
+    {
+     "cls": "RangeSlider",
+     "x": 600,
+     "y": 432,
+     "act": "slide",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 120,
+     "y": 560,
+     "act": "tap",
+     "txt": "Set"
+    }
+   ]
+  },
+  "Text Field": {
+   "nav": [
+    6,
+    693,
+    1191
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 146,
+     "y": 249,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 413,
+     "y": 249,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 554,
+     "act": "tap",
+     "txt": "Turn this switch On to c"
+    },
+    {
+     "cls": "SwitchMaterial",
+     "x": 139,
+     "y": 939,
+     "act": "tap",
+     "txt": "Enabled"
+    },
+    {
+     "cls": "SwitchMaterial",
+     "x": 392,
+     "y": 939,
+     "act": "tap",
+     "txt": "Enabled"
+    }
+   ]
+  },
+  "Time Picker": {
+   "nav": [
+    6,
+    106,
+    1551
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 234,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 405,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 565,
+     "act": "type",
+     "txt": ""
+    },
+    {
+     "cls": "TextInputEditText",
+     "x": 600,
+     "y": 731,
+     "act": "type",
+     "txt": ""
+    }
+   ]
+  },
+  "Top App Bar": {
+   "nav": [
+    6,
+    711,
+    1551
+   ],
+   "row": [
+    600,
+    369
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 171,
+     "y": 711,
+     "act": "tap",
+     "txt": "Select Time"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 426,
+     "y": 267,
+     "act": "tap",
+     "txt": "System"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 607,
+     "y": 267,
+     "act": "tap",
+     "txt": "12H"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 781,
+     "y": 267,
+     "act": "tap",
+     "txt": "24H"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 404,
+     "y": 487,
+     "act": "tap",
+     "txt": "Default"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 585,
+     "y": 487,
+     "act": "tap",
+     "txt": "Clock"
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 781,
+     "y": 487,
+     "act": "tap",
+     "txt": "Keyboard"
+    },
+    {
+     "cls": "MaterialSwitch",
+     "x": 600,
+     "y": 615,
+     "act": "tap",
+     "txt": "Use Framework Time Picke"
+    }
+   ]
+  },
+  "Transition": {
+   "nav": [
+    7,
+    94,
+    1719
+   ],
+   "row": [
+    600,
+    421
+   ],
+   "widgets": [
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 421,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 421,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 642,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 642,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 786,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 786,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 930,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 930,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 1074,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 1074,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 1218,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 1218,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 1362,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 1362,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 1506,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 1506,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ConstraintLayout",
+     "x": 600,
+     "y": 1650,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "MaterialButton",
+     "x": 1120,
+     "y": 1650,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    }
+   ]
+  },
+  "Typography": {
+   "nav": [
+    7,
+    707,
+    1719
+   ],
+   "row": [
+    600,
+    471
+   ],
+   "widgets": [
+    {
+     "cls": "ActionMenuItemView",
+     "x": 1152,
+     "y": 64,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 176,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 392,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 577,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 738,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 888,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1028,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1157,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1280,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1387,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1489,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1596,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1698,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1795,
+     "act": "tap",
+     "txt": ""
+    },
+    {
+     "cls": "AppCompatImageView",
+     "x": 1136,
+     "y": 1897,
+     "act": "tap",
+     "txt": ""
+    }
+   ]
+  }
+ }
+}
