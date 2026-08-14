@@ -234,7 +234,63 @@ int AppSpawnXRuntime::startVm() {
         LOGW("DEX verification disabled (dev mode)");
     }
 
+    // ── §526: JIT bring-up diagnostics ──────────────────────────────────────────────────────────
+    // The child runs with ZERO compiled code: /proc/<pid>/maps has no jit-code-cache mapping and the
+    // only anonymous executable region is [vdso]. Everything is interpreted, which is why a library
+    // sync that is sub-second on a stock phone takes minutes here and why timing-sensitive paths
+    // deadlock.
+    //
+    // ART is silent about it: neither "Created jit code cache" nor "Failed to create JIT Code Cache"
+    // (both present in libart's string table) appears in the child's stderr OR in hilog, so
+    // JitCodeCache::Create is likely never reached. -verbose:jit makes ART narrate the decision
+    // instead of guessing at it, and -Xusejit:true removes any doubt about the default.
+    if (const char* v = getenv("APPSPAWNX_JIT_VERBOSE"); v && strcmp(v, "1") == 0) {
+        options.push_back(makeOption("-verbose:jit"));
+        LOGW("ART JIT verbose logging ENABLED via APPSPAWNX_JIT_VERBOSE=1");
+    }
+    if (const char* v = getenv("APPSPAWNX_FORCE_JIT"); v && strcmp(v, "1") == 0) {
+        options.push_back(makeOption("-Xusejit:true"));
+        // §531: do NOT force -Xjitthreshold:1. That was my own aggressive setting to get compilation
+        // happening immediately, and it is the likely cause of the StackOverflowError seen with the
+        // JIT on: at threshold 1 every method compiles on its FIRST call, so compilation kicks off
+        // during class initialisation, which resolves more classes, which compiles more methods —
+        // re-entrant until an 8MB stack is exhausted ("StackOverflowError: stack size 8182KB", i.e.
+        // real runaway recursion, not missing headroom). ART's default threshold lets startup run
+        // interpreted and only compiles genuinely hot methods.
+        if (const char* t = getenv("APPSPAWNX_JIT_THRESHOLD"); t && *t) {
+            std::string opt = std::string("-Xjitthreshold:") + t;
+            options.push_back(makeOption(opt.c_str()));
+            LOGW("ART JIT FORCED ON (threshold=%s)", t);
+        } else {
+            LOGW("ART JIT FORCED ON via APPSPAWNX_FORCE_JIT=1 (ART default threshold)");
+        }
+    }
+    // §530: with the JIT on, the child died with java.lang.StackOverflowError inside
+    // AppSpawnXInit.initChild(). InstallImplicitProtection SUCCEEDED (no "Unable to create protected
+    // region"), so the guard page is fine — the suspicion is that compiled frames need more headroom
+    // than the interpreter did, which is exactly the condition libart's
+    // "Need to increase kStackOverflowReservedBytes (currently ...)" guards.
+    // Java thread stack size is the cheapest lever to test that.
+    if (const char* v = getenv("APPSPAWNX_XSS"); v && *v) {
+        std::string opt = std::string("-Xss") + v;
+        options.push_back(makeOption(opt.c_str()));
+        LOGW("ART thread stack size set to %s via APPSPAWNX_XSS", v);
+    }
+
     // 2026-05-01 G2.14n DIAGNOSTIC: disable JIT.
+    // §561: ART's IMPLICIT stack-overflow / null checks work by deliberately touching a guard
+    // page and fixing up the faulting PC inside a signal handler. On OHOS that PC edit does not
+    // survive sigreturn (the same defect that made implicit-null fatal under AOT/JIT --
+    // see startup-flaky-getapplicationinfo-fix-2026-06-29), so the moment the JIT starts running
+    // compiled frames the main thread throws a spurious
+    //     java.lang.StackOverflowError: stack size 8182KB
+    // at 8 MB, and it is unaffected by -Xss or the JIT threshold. Explicit checks cost a compare
+    // per frame but do not depend on signal delivery at all.
+    if (const char* v = getenv("APPSPAWNX_EXPLICIT_CHECKS"); v && strcmp(v, "1") == 0) {
+        options.push_back(makeOption("-Ximplicit-checks:none"));
+        options.push_back(makeOption("-Xexplicit-checks:all"));
+        LOGW("ART EXPLICIT checks forced (implicit stack/null checks OFF) via APPSPAWNX_EXPLICIT_CHECKS=1");
+    }
     if (const char* v = getenv("APPSPAWNX_NO_JIT"); v && strcmp(v, "1") == 0) {
         options.push_back(makeOption("-Xusejit:false"));
         LOGW("ART JIT DISABLED via APPSPAWNX_NO_JIT=1");
