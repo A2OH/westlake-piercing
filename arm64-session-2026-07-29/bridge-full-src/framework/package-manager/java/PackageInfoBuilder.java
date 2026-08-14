@@ -165,6 +165,11 @@ public class PackageInfoBuilder {
         // 字段映射权威：doc/ability_manager_ipc_adapter_design.html §1.1.4
         ApplicationInfo ai = new ApplicationInfo();
         ai.packageName = packageName;
+        // 2026-08-13 §611c (ports the arm32 material-catalog metaData fix): apps read
+        // getApplicationInfo().metaData unconditionally (Material Catalog NPEs on null in
+        // overrideApplicationComponent). A non-null EMPTY Bundle is the validated fix —
+        // getString() then returns null and apps take their documented fallback path.
+        ai.metaData = new android.os.Bundle();
 
         JSONObject ohApp = json.optJSONObject("applicationInfo");
         if (ohApp == null) ohApp = new JSONObject();
