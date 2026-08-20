@@ -5,7 +5,7 @@ Build: `build_bridge_arm64.sh` (recipe bridge_incs_all.txt + overlay + shims).
 
 ## The breakthrough: correct AOSP tree
 The "AOSP-version gap" was using the wrong AOSP. The adapter bundles its OWN newer
-AOSP at **/home/dspfac/bridge-build/aosp** (585M — has AssetManager2::SelectedValue,
+AOSP at **$WLROOT/bridge-build/aosp** (585M — has AssetManager2::SelectedValue,
 PointerCoords::isResampled, InputEventLookup, real JNIPlatformHelp.h + binder/OS.h,
 math/, GLES/). Using it (AOSP=bridge-build/aosp) + the adapter's own
 android-runtime/src on the include path fixed the whole asset/input/AndroidRuntime

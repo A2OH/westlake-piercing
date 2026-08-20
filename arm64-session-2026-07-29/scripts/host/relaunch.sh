@@ -8,7 +8,7 @@
 # Always confirm `side-channels started` before believing any input result.
 #
 #   usage: relaunch.sh [max_attempts]
-. /home/dspfac/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
+. $WLROOT/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
 : "${HDC:?source recipes/env.sh first}"
 MAX="${1:-4}"
 

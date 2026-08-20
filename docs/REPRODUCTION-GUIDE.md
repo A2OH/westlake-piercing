@@ -91,7 +91,7 @@ hdc wrapper) are called out where they matter.
 | Java / dexers | `$HOME/miniconda3/bin/javac` (21, always `--release 17`); **r8.jar 8.2.33** at `$HOME/android-sdk/cmdline-tools/latest/lib/r8.jar` | Use **r8.jar D8**, not `build-tools/.../d8` (NPEs on anonymous inner classes). |
 | Android SDK platform | `$HOME/android-sdk/platforms/android-34/android.jar` | Compile classpath for adapter/app Java. |
 | smali round-trip | `$HOME/apktool.jar` + helper dir `/tmp/fwktools` (Baksmali2 / SmaliAssemble dexlib2 wrappers) | apktool.jar has Baksmali but **not** a smali *assembler* convenience class — the `SmaliAssemble` wrapper IS the assembler. The toolchain is wiped by host reboot; reconstruct `/tmp/fwktools`. |
-| hdc transport | `/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe` (Windows) + a `/tmp/h` wrapper filtering WSL `UtilAcceptVsock` noise | hdc.exe mangles WSL abs paths and silently drops large files → stage all sends/recvs through a Windows dir `C:\Users\dspfa\Dev\ohos-tools\`. |
+| hdc transport | `$WIN_DEV_ROOT/ohos-tools/hdc.exe` (Windows) + a `/tmp/h` wrapper filtering WSL `UtilAcceptVsock` noise | hdc.exe mangles WSL abs paths and silently drops large files → stage all sends/recvs through a Windows dir `C:\Users\dspfa\Dev\ohos-tools\`. |
 
 ### Deploy bundle
 `$HOME/westlake-complete/` is the assembled from-zero deploy set (the `v3-hbc` self-consistent
@@ -763,7 +763,7 @@ How to confirm a reproduction is correct, in order:
 - SELinux: `/system/etc/selinux/config` ; init: `/system/etc/init/appspawn_x.cfg`.
 
 ### hdc / staging (WSL)
-- `/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe` + a `/tmp/h` wrapper (filters `UtilAcceptVsock`).
+- `$WIN_DEV_ROOT/ohos-tools/hdc.exe` + a `/tmp/h` wrapper (filters `UtilAcceptVsock`).
 - Stage all sends/recvs through a Windows dir `C:\Users\dspfa\Dev\ohos-tools\` (hdc.exe mangles WSL abs
   paths + silently drops large files). Always size-verify + md5-verify after a send.
 

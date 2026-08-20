@@ -1,6 +1,6 @@
 #!/bin/bash
-HDC=/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe
-WINDIR='C:\Users\dspfa\Dev\ohos-tools'; WSLWIN=/mnt/c/Users/dspfa/Dev/ohos-tools
+HDC=$WIN_DEV_ROOT/ohos-tools/hdc.exe
+WINDIR='C:\Users\dspfa\Dev\ohos-tools'; WSLWIN=$WIN_DEV_ROOT/ohos-tools
 BIMG=/tmp/tagsoup-boot/out/boot-image
 BASE=/data/app/el1/0/base/com.github.ashutoshgngwr.noice
 EV=$HOME/openharmony/docs/engine/V3-NOICE-DPAD-FINDINGS

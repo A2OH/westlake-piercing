@@ -6,10 +6,11 @@ including 'mcdonalds'/'Lcom/mcdonalds/...'/'newrelic' needles. noice has ZERO su
 (x0 = null = exactly strstr's no-match result); the following `cbnz x0,handler` then falls through
 identically. 20 sites (10 per DoCall template). Pure dead-work removal — semantically identical for
 this app. ⛔binary patch. Refuses any site that isn't currently a BL."""
+import os
 import json,struct,sys
 SRC,DST=sys.argv[1],sys.argv[2]; D=0x1000
 MOV_X0_0=0xaa1f03e0
-sites=json.load(open('/tmp/claude-1000/-home-dspfac-openharmony/969523b9-c069-43df-983b-1395ea6611d2/scratchpad/mcd_sites.json'))
+sites=json.load(open(os.environ.get('WL_SCRATCH','/tmp/wl-scratch')+'/mcd_sites.json'))
 b=bytearray(open(SRC,'rb').read()); n=0
 for va in sites:
     off=va-D; ins=struct.unpack_from('<I',b,off)[0]

@@ -27,7 +27,7 @@ AOSP C++ libs. Undefined by lib:
 - **libandroidfw** (AssetsProvider ×10, ApkAssets, ResXMLTree/Parser ×13, ResStringPool)
 - **libbase** (×15), **libutils** (String8/16 ×17), **libbinder** (sp/IBinder/RpcSession ×16)
 - (for render later: **libhwui + skia + libminikin/ft2/harfbuzz** — 11 skia syms already seen)
-These are arm32 in /home/dspfac/bridge-build/out/aosp_lib/ (machine ARM). Build recipe:
+These are arm32 in $WLROOT/bridge-build/out/aosp_lib/ (machine ARM). Build recipe:
 `bridge-build/build/build_aosp_lib.sh` (targets libbase/libutils/libandroidfw/libhwui/...).
 Adapt to arm64 (OHOS clang, --target=aarch64, like the bridge) → deploy → bridge loads fully.
 

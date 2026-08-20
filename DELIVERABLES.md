@@ -1,7 +1,7 @@
 # ART v114 (AOSP-15) 64-bit + boot image — deliverables for the new OHOS board
 
 Goal: **build art15 64-bit + boot image ("bootloader") for the new OHOS dev board**
-(serial `5cdbf6af00000000000000000923012c`, pure arm64/aarch64 OHOS 3.2). **DONE** —
+(serial `$BOARD_SERIAL`, pure arm64/aarch64 OHOS 3.2). **DONE** —
 the runtime executes Java bytecode on the board, with and without the boot image.
 
 ## Built artifacts (all aarch64 / ELF machine 0xb7)
@@ -14,7 +14,7 @@ the runtime executes Java bytecode on the board, with and without the boot image
 | **boot image** | `bridge-build-arm64/bootimg/boot.art` (+ boot-core-libart.art, boot-core-icu4j.art, .oat/.vdex) | ~5 MB; loads on board |
 | **matched libcore jars** | `bridge-build-arm64/core-jars-matched/` | core-oj (4023 cls) + core-libart; a15 jars also work |
 
-Source: AOSP-15 ART (`/home/dspfac/aosp-art-15`) + AOSP-11 framework headers, built
+Source: AOSP-15 ART (`$WLROOT/aosp-art-15`) + AOSP-11 framework headers, built
 via `art-latest/Makefile.ohos-arm64` (OHOS clang 15, `--target=aarch64-linux-ohos`).
 libart via `art-universal-build`. Core jars from `aosp-libcore-15/build_core_jars.sh`.
 

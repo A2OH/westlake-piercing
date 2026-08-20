@@ -7,8 +7,8 @@
 # metrics_stubs+real metrics via --allow-multiple-definition, fault/template/thread_cpu
 # stubs, fmtlib, tinyxml2, jni_stubs). Deps: board libz (NEEDED) + libc + libc++_shared.
 set -e
-NDK=/home/dspfac/ohos-sdk-6.1/linux/native; CXX=$NDK/llvm/bin/clang++
-BD=/home/dspfac/art-latest/build-ohos-arm64; O=/home/dspfac/bridge-build-arm64/out; LIBDIR=$O/board_libs
+NDK=$WLROOT/ohos-sdk-6.1/linux/native; CXX=$NDK/llvm/bin/clang++
+BD=$WLROOT/art-latest/build-ohos-arm64; O=$WLROOT/bridge-build-arm64/out; LIBDIR=$O/board_libs
 FIND_OBJS=$(find $BD/nativehelper $BD/runtime $BD/libdexfile $BD/libartbase $BD/libelffile $BD/libprofile $BD/compiler $BD/vixl $BD/android-base $BD/ziparchive -name '*.o')
 STUB_OBJS="$BD/sigchain/sigchain.o $BD/stubs/link_stubs_arm64.o $BD/stubs/code_generator_vector_arm64_sve_stub.o $BD/stubs/fault_handler_stubs.o $BD/stubs/template_instantiations.o $BD/stubs/metrics_stubs.o $BD/stubs/thread_cpu_stub.o $BD/fmtlib/format.o $BD/tinyxml2/tinyxml2.o"
 ASM_OBJS="$BD/asm_arm64/quick_entrypoints_arm64.o $BD/asm_arm64/jni_entrypoints_arm64.o $BD/asm_arm64/memcmp16_arm64.o $BD/stubs/quick_entrypoints_stubs_arm64.o"

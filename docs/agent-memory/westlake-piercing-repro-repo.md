@@ -34,7 +34,7 @@ Fix-J2B) + `build_libart_pathA.sh` + `BASE-MANIFEST.md`. **`A2OH/art-latest` (PF
 
 **★ PRIVACY — a leak happened + was cleaned (2026-06-25):** commits had been authored as
 `westlake <[REDACTED-EMAIL]>` (the box's git `user.email`), and docs/scripts contained
-`/home/{dspfac,[user],westlake-dev}` absolute paths. All **SCRUBBED via `git filter-repo`**:
+`/home/{westlake,[user],westlake-dev}` absolute paths. All **SCRUBBED via `git filter-repo`**:
 identity → `westlake <westlake@users.noreply.github.com>`, `/home/<user>` → `$HOME`, bare names → `user`
 (rules in `/tmp/wl_replace.txt`). The repo's **local** git config is now the westlake placeholder;
 the **global** git config still has the real email (left intact for internal repos). **NEVER

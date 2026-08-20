@@ -6,7 +6,7 @@
 #
 #   usage: wl.sh '<cmd>' [settle_seconds] [grep_filter]
 #     cmd = harness verb: 'v' (dump rects) | 'w' | 'r<N>' | 'x y' (tap) | 'x1 y1 x2 y2' (swipe) | 'back'
-. /home/dspfac/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
+. $WLROOT/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
 : "${HDC:?source recipes/env.sh first}"
 CMD="$1"; SETTLE="${2:-3}"; FILT="${3:-}"
 

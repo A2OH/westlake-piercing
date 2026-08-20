@@ -5,7 +5,7 @@
 # Why deferred: enabling at fork kills initChild, which mixes startup complexity into the failure.
 # With the delay the app is proven healthy first, so anything that happens after the
 # "[JIT-560] delay elapsed" marker is attributable to the JIT alone.
-. /home/dspfac/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
+. $WLROOT/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
 : "${HDC:?source recipes/env.sh first}"
 DELAY_MS="${1:-40000}"
 

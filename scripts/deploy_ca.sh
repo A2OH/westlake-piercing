@@ -1,6 +1,6 @@
 #!/bin/bash
-HDC=/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe
-WINDIR='C:\Users\dspfa\Dev\ohos-tools'; WSLWIN=/mnt/c/Users/dspfa/Dev/ohos-tools
+HDC=$WIN_DEV_ROOT/ohos-tools/hdc.exe
+WINDIR='C:\Users\dspfa\Dev\ohos-tools'; WSLWIN=$WIN_DEV_ROOT/ohos-tools
 BASE=/data/app/el1/0/base/com.github.ashutoshgngwr.noice
 sh() { $HDC shell "$1" 2>&1 | tr -d '\r'; }
 npid() { for i in 1 2 3; do p=$(sh 'for d in /proc/[0-9]*; do u=$(grep -m1 "^Uid:" $d/status 2>/dev/null|cut -f2); c=$(cat $d/comm 2>/dev/null); if [ "$u" = "13731" ] && [ "$c" != sh ]; then echo ${d##*/}; fi; done|head -1'); [ -n "$p" ] && { echo "$p"; return; }; sleep 1; done; }

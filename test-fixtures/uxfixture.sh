@@ -23,8 +23,8 @@
 # OUTPUT: structured [PASS]/[FAIL]/[WARN] per step + a final summary + exit code.
 # ============================================================================
 set -u
-HDC=/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe
-WINDIR='C:\Users\dspfa\Dev\ohos-tools'; WSLWIN=/mnt/c/Users/dspfa/Dev/ohos-tools
+HDC=$WIN_DEV_ROOT/ohos-tools/hdc.exe
+WINDIR='C:\Users\dspfa\Dev\ohos-tools'; WSLWIN=$WIN_DEV_ROOT/ohos-tools
 BASE=/data/app/el1/0/base/com.github.ashutoshgngwr.noice
 ART=$HOME/openharmony/docs/engine/V3-NOICE-DPAD-FINDINGS/uxtest-shots
 ROUNDS="${1:-2}"

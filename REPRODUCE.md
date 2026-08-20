@@ -69,7 +69,7 @@ it via an **AOSP-app adapter** layered on OHOS. Components:
 The device is reached over `hdc` **from WSL, invoking the Windows hdc.exe**:
 
 ```bash
-HDC=/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe
+HDC=$WIN_DEV_ROOT/ohos-tools/hdc.exe
 sh() { $HDC shell "$1" 2>&1 | tr -d '\r'; }   # strip the CRLF hdc.exe adds
 ```
 
@@ -79,7 +79,7 @@ directory) or drops large files. **Always copy the file into the Windows tools
 dir first and send the Windows path:**
 
 ```bash
-WSLWIN=/mnt/c/Users/dspfa/Dev/ohos-tools     # same dir, WSL view
+WSLWIN=$WIN_DEV_ROOT/ohos-tools     # same dir, WSL view
 WINDIR='C:\Users\dspfa\Dev\ohos-tools'       # same dir, Windows view
 cp myfile.so "$WSLWIN/x.so"
 $HDC file send "$WINDIR\\x.so" /data/local/tmp/x.so 2>&1 | tr -d '\r' | grep -iE 'finish|fail'

@@ -1,6 +1,6 @@
 # aarch64 (arm64) board port — scoping
 
-New dev board `5cdbf6af00000000000000000923012c` is **pure arm64/aarch64** OpenHarmony
+New dev board `$BOARD_SERIAL` is **pure arm64/aarch64** OpenHarmony
 3.2 (API 23, kernel 5.15.180). The entire existing westlake adapter stack is arm32
 and **cannot execute** here — there is no `ld-musl-arm.so.1` (32-bit ELF loader),
 abilist is `arm64-v8a` only, and the native binaries (`/system/bin/sh`,
@@ -59,7 +59,7 @@ compiled for OHOS aarch64 via `Makefile.ohos-arm64`, OHOS clang 15). All ARM64
 objects were already compiled (runtime 217/216, compiler 105, libartbase 27,
 libdexfile 17, vixl 23, ... — `make -f Makefile.ohos-arm64 all jni-stubs`).
 
-Linked a shared **libart.so** (recipe: `/home/dspfac/bridge-build-arm64/build_libart_arm64.sh`):
+Linked a shared **libart.so** (recipe: `$WLROOT/bridge-build-arm64/build_libart_arm64.sh`):
 - ELF64 AArch64 DYN, ~13.7 MB, **2694 runtime symbols exported**.
 - Only **33 undefined symbols**, all a bounded ENVIRONMENT set (zlib, C++ `_Unwind_*`,
   compiler-rt builtins, libbase fd-passing, `jit_load` from libart-compiler, art TLS).
@@ -99,7 +99,7 @@ for art-universal's ART, then the on-board dex2oat should complete the arm64 boo
 image. After that: run dalvikvm with the image (full runtime init) → then relink
 appspawn-x aarch64 to host adapter apps.
 
-Recipes captured: `/home/dspfac/bridge-build-arm64/build_libart_arm64.sh`; on-board
+Recipes captured: `$WLROOT/bridge-build-arm64/build_libart_arm64.sh`; on-board
 dex2oat cmd above. art-universal-build (AOSP 11) is the arm64 ART base.
 
 ## De-risk step 4 — boot classpath frontier: core-jar ↔ ART String-layout mismatch (2026-07-08)
@@ -167,7 +167,7 @@ This is the genuine porting frontier. Best pursued as a focused effort:
 Toolchain ✓, arm64 libart.so loads ✓, arm64 dalvikvm runs ✓, arm64 dex2oat inits
 + verifies + compiles thousands of methods ✓. Only the compile-time clinit phase
 of boot-image generation remains. Host cross-build log:
-`/home/dspfac/bridge-build-arm64/bootimg/d2o_host.err`.
+`$WLROOT/bridge-build-arm64/bootimg/d2o_host.err`.
 
 ## De-risk step 6 — arm64 BOOT IMAGE BUILDS + loads (2026-07-08) ✅✅✅
 
@@ -252,7 +252,7 @@ raw-FD output is a working escape hatch for visible output.
 
 ## De-risk step 9 — matched libcore jars BUILT; charset root-caused to clinit bug (2026-07-08)
 
-**Matched libcore jars built** from `/home/dspfac/aosp-libcore-15` via its
+**Matched libcore jars built** from `$WLROOT/aosp-libcore-15` via its
 `build_core_jars.sh` (javac 2254 srcs + 32 stubs → r8/d8): **core-oj.jar (2.4MB,
 4023 classes) + core-libart.jar (24 classes)**, saved at
 `bridge-build-arm64/core-jars-matched/` (+ here). They compile clean and are

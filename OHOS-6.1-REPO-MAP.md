@@ -74,7 +74,7 @@ was written for the older-OHOS arm32 board, so 6.1 API drift (window session zid
 render_service, MMI) will need per-call fixups — that's the porting work, now possible.
 
 ## ✅ SDK acquired + map validated (2026-07-08)
-- **Public SDK downloaded + extracted**: `/home/dspfac/ohos-sdk-6.1/linux/native/` —
+- **Public SDK downloaded + extracted**: `$WLROOT/ohos-sdk-6.1/linux/native/` —
   6.1.0.31 arm64 sysroot (`sysroot/usr/lib/aarch64-linux-ohos`: crt1.o, libc.so,
   libc++, **libohaudio.so**, libace_napi/ndk) + bundled **OHOS clang 15.0.4**. This
   is the correct 6.1 arm64 build toolchain (replaces the improvised sysroot).
@@ -91,7 +91,7 @@ render_service, MMI) will need per-call fixups — that's the porting work, now 
 
 ### Build-toolchain env for 6.1 arm64 (use the SDK sysroot)
 ```
-NDK=/home/dspfac/ohos-sdk-6.1/linux/native
+NDK=$WLROOT/ohos-sdk-6.1/linux/native
 CLANG=$NDK/llvm/bin/clang++   # OHOS clang 15.0.4
 SYSROOT=$NDK/sysroot
 # --target=aarch64-linux-ohos --sysroot=$SYSROOT
@@ -99,12 +99,12 @@ SYSROOT=$NDK/sysroot
 ### Next: sparse source sync of the ~24 inner-API repos (from the pinned manifest),
 then rebuild appspawn-x + bridge for aarch64 against 6.1 headers.
 
-## ✅ Sparse sync KICKED OFF (2026-07-08) — /home/dspfac/ohos-6.1-src/
+## ✅ Sparse sync KICKED OFF (2026-07-08) — $WLROOT/ohos-6.1-src/
 Working recipe (repo init succeeded → 502-project 6.1 manifest; selective sync of
 the 21 validated inner-API repos, NO third_party source needed — the SDK sysroot
 provides libc/libc++ headers):
 ```
-cd /home/dspfac/ohos-6.1-src
+cd $WLROOT/ohos-6.1-src
 repo init -u https://gitcode.com/openharmony/manifest -b OpenHarmony-6.1-Release --no-repo-verify
 repo sync -c -j6 --no-clone-bundle $(cat valid_projects.txt)   # 21 repos, headers
 ```
@@ -112,4 +112,4 @@ repo sync -c -j6 --no-clone-bundle $(cat valid_projects.txt)   # 21 repos, heade
 validate paths against `.repo/manifests/ohos/ohos.xml` (projects are in the INCLUDED
 sub-manifest, not top-level default.xml). All 21 targets confirmed present.
 Running in background; when done → build appspawn-x aarch64 vs 6.1 headers +
-`$NDK/sysroot` (NDK=/home/dspfac/ohos-sdk-6.1/linux/native).
+`$NDK/sysroot` (NDK=$WLROOT/ohos-sdk-6.1/linux/native).

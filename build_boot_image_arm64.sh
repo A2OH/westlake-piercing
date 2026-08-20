@@ -14,10 +14,10 @@
 #   Runtime::Start through native registration + root clinits (then hits a
 #   separate daemon-thread DetachCurrentThread abort — the next frontier).
 set -e
-D2O=/home/dspfac/art-latest/build/bin/dex2oat            # x86-64 host, HAS ARM64 codegen
-CJ=/home/dspfac/art-latest/core-jars                     # a15 core jars (match art-latest ART)
-ART=/home/dspfac/art-latest
-OUT=${1:-/home/dspfac/bridge-build-arm64/bootimg}
+D2O=$WLROOT/art-latest/build/bin/dex2oat            # x86-64 host, HAS ARM64 codegen
+CJ=$WLROOT/art-latest/core-jars                     # a15 core jars (match art-latest ART)
+ART=$WLROOT/art-latest
+OUT=${1:-$WLROOT/bridge-build-arm64/bootimg}
 mkdir -p "$OUT"
 
 ANDROID_ROOT=$ART "$D2O" \

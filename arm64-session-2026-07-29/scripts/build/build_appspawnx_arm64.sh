@@ -15,7 +15,7 @@ LIBARTDIR=$WLROOT/art-universal-build/build-ohos-arm64/lib
 BC=$ADAPTER/appspawn-x/bionic_compat/include
 O=$WLROOT/bridge-build-arm64/out; mkdir -p $O
 TMP=$WLROOT/bridge-build-arm64/appspawnx_build; rm -rf $TMP; mkdir -p $TMP
-BOARD=5cdbf6af00000000000000000923012c
+BOARD=$BOARD_SERIAL
 
 INC="-I$ADAPTER/appspawn-x/src \
 -I$OHSRC/base/startup/appspawn/interfaces/innerkits/include \

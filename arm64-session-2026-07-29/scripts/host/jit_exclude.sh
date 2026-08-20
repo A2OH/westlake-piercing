@@ -2,7 +2,7 @@
 # §570 test: mark the Kotlin continuation classes non-compilable, THEN let the JIT go live.
 # Ordering matters — the exclusion must land before compilation starts, so the JIT delay is set
 # long enough to apply it while the app is still interpreted.
-. /home/dspfac/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
+. $WLROOT/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
 : "${HDC:?}"
 DELAY_MS="${1:-90000}"
 shift

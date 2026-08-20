@@ -2758,8 +2758,8 @@ bool Runtime::Start() {
      *     toString() loop.  CR24 sidestepped the call site entirely.
      *   - Underlying root cause (CR26 investigation): the writer of the
      *     sentinel into fns->NewStringUTF is NOT in art-latest source — no
-     *     assignment to 0xfffffffffffffb17 exists anywhere in /home/dspfac/
-     *     aosp-art-15/ or /home/dspfac/art-latest/.  All ART-side references
+     *     assignment to 0xfffffffffffffb17 exists anywhere in $WLROOT/
+     *     aosp-art-15/ or $WLROOT/art-latest/.  All ART-side references
      *     to kPFCutStaleNativeEntry are READERS that detect-and-repair stale
      *     entries already-present in memory.  The sentinel value must be
      *     ambient — pre-existing in uninitialized heap/stack/JNI tables

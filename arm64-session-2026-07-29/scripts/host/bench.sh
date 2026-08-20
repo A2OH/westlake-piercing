@@ -11,7 +11,7 @@
 # Everything runs on-device: an hdc round trip is 200-400 ms and would swamp the measurement.
 #
 #   usage: bench.sh <label> [taps]
-. /home/dspfac/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
+. $WLROOT/westlake-arm64/arm64-session-2026-07-29/recipes/env.sh 2>/dev/null
 : "${HDC:?}"
 LABEL="${1:-run}"; TAPS="${2:-6}"
 

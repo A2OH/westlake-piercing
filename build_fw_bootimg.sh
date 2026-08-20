@@ -1,8 +1,8 @@
 #!/bin/bash
-D2O=/home/dspfac/art-latest/build/bin/dex2oat   # x86 host, ARM64 codegen
-FW=/home/dspfac/bridge-build-arm64/fwjars
-ART=/home/dspfac/art-latest
-OUT=/home/dspfac/bridge-build-arm64/fwbootimg; mkdir -p $OUT
+D2O=$WLROOT/art-latest/build/bin/dex2oat   # x86 host, ARM64 codegen
+FW=$WLROOT/bridge-build-arm64/fwjars
+ART=$WLROOT/art-latest
+OUT=$WLROOT/bridge-build-arm64/fwbootimg; mkdir -p $OUT
 # bootclasspath in EXACT kBootClasspath order
 JARS="core-oj core-libart core-icu4j okhttp bouncycastle apache-xml adapter-mainline-stubs framework adapter-runtime-bcp oh-adapter-framework"
 DEXARGS=""; for j in $JARS; do DEXARGS="$DEXARGS --dex-file=$FW/$j.jar"; done

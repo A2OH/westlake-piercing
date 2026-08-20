@@ -32,7 +32,7 @@
 # OUTPUT: [PASS]/[FAIL]/[WARN] per step + summary; screenshots in $ART/.
 # =============================================================================
 set -u
-HDC=/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe
+HDC=$WIN_DEV_ROOT/ohos-tools/hdc.exe
 BASE=/data/app/el1/0/base/com.github.ashutoshgngwr.noice
 ART="$(dirname "$0")/uxshots"; mkdir -p "$ART"
 sh(){ $HDC shell "$1" 2>&1 | tr -d '\r'; }

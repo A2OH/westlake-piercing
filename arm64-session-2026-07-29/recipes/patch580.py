@@ -3,12 +3,13 @@
 Trampoline in the code cave @0xfd9818: save regs, write "LRX=" + raw 8-byte x30 (caller return addr)
 to fd 2, restore, run the displaced first instruction, branch back. Patch ThrowStackOverflowError
 @0x8574e8 first insn -> b cave. Lets us NAME the exact throw site from the headless bench. Removable."""
+import os
 import struct,sys
 SRC,DST=sys.argv[1],sys.argv[2]; D=0x1000
 CAVE_VA=0xfd9818
 THROW_VA=0x8574e8
 RET_VA=0x8574ec               # 2nd insn of ThrowStackOverflowError
-body=open('/tmp/claude-1000/-home-dspfac-openharmony/969523b9-c069-43df-983b-1395ea6611d2/scratchpad/cave.bin','rb').read()
+body=open(os.environ.get('WL_SCRATCH','/tmp/wl-scratch')+'/cave.bin','rb').read()
 assert len(body)==64, len(body)
 def B(from_va,to_va):
     off=(to_va-from_va)>>2

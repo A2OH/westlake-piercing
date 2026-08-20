@@ -1,7 +1,7 @@
 #!/bin/bash
 # targeted android-15.0.0_r1 AOSP source sync for the arm64 support-lib build.
 # Small repos: --depth=1 full. Big repos (frameworks/base/native): blobless + sparse.
-cd /home/dspfac/aosp-15
+cd $WLROOT/aosp-15
 TAG=android-15.0.0_r1; BASE=https://android.googlesource.com/platform
 clone_full(){ local p=$1 d=$2; echo "[SYNC] $p (full depth1)..."; rm -rf "$d"; git clone --depth=1 -b $TAG "$BASE/$p" "$d" 2>&1 | tail -1; }
 clone_sparse(){ local p=$1 d=$2; shift 2; echo "[SYNC] $p (blobless sparse: $*)..."; rm -rf "$d";

@@ -1,6 +1,6 @@
 # Artifact map — what lives where on the board
 
-Board: `5cdbf6af00000000000000000923012c`, aarch64, OHOS 6.1.0.31. Staging root `/data/local/tmp/asx`.
+Board: `$BOARD_SERIAL`, aarch64, OHOS 6.1.0.31. Staging root `/data/local/tmp/asx`.
 
 ## Built by us, pushed to the device
 

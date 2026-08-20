@@ -1,6 +1,6 @@
 #!/bin/bash
-HDC=/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe
-WINDIR='C:\Users\dspfa\Dev\ohos-tools'; WSLWIN=/mnt/c/Users/dspfa/Dev/ohos-tools
+HDC=$WIN_DEV_ROOT/ohos-tools/hdc.exe
+WINDIR='C:\Users\dspfa\Dev\ohos-tools'; WSLWIN=$WIN_DEV_ROOT/ohos-tools
 BUNDLE=/data/app/el1/bundle/public/com.github.ashutoshgngwr.noice/android
 BASE=/data/app/el1/0/base/com.github.ashutoshgngwr.noice
 sh() { $HDC shell "$1" 2>&1 | tr -d '\r'; }

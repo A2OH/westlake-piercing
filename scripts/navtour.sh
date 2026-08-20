@@ -1,5 +1,5 @@
 #!/bin/bash
-HDC=/mnt/c/Users/dspfa/Dev/ohos-tools/hdc.exe
+HDC=$WIN_DEV_ROOT/ohos-tools/hdc.exe
 BASE=/data/app/el1/0/base/com.github.ashutoshgngwr.noice
 EV=$HOME/openharmony/docs/engine/V3-NOICE-DPAD-FINDINGS/navtour
 sh() { $HDC shell "$1" 2>&1 | tr -d '\r'; }
