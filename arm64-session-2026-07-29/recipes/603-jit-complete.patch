@@ -1,0 +1,555 @@
+# §603 — COMPLETE JIT ENABLEMENT for the westlake OHOS arm64 port (2026-08-10)
+#
+# Consolidates every source change needed to run the JIT: §601 (enable) + §603f (§436 guard)
+# + §603h (the render/artwork fix) + §603i (mini-debug-info) + the AOT-adjacent §602/§603 bits.
+#
+# ⚠️THE CHANGES SPAN TWO TREES. The Makefiles compile a MIXTURE:
+#     art-latest/patches/**  (explicit per-file list in Makefile.ohos-arm64 -- NOT a glob)
+#     aosp-art-15/**         (everything not in that list, incl. headers and common_throws.cc)
+#   Apply part A in $WLROOT/art-latest and part B in $WLROOT/aosp-art-15.
+#
+# Build:  cd $WLROOT/art-latest && make -f Makefile.ohos-arm64 -j16 all
+#         bash $WLROOT/bridge-build-arm64/build_libart_so_arm64.sh
+# ⚠️The Makefile has NO header dependency tracking: after editing any .h you MUST delete the
+#   dependent .o by hand (e.g. build-ohos-arm64/compiler/driver/compiler_options.o) or nothing
+#   rebuilds and the md5 will not change. ALWAYS byte-verify a marker string in out/libart.so.
+#
+# Verify: APPSPAWNX_FORCE_JIT=1 via ab_render.sh; the oracle is the sound-library row artwork
+#   (~125 000 B screenshot = good, ~113 800 B = the ArrayStoreException bug, ~36 900 B = not drawn yet).
+#
+# ================================ PART A: art-latest ================================
+diff --git a/patches/runtime/art_method.cc b/patches/runtime/art_method.cc
+index 99bd191..e607188 100644
+--- a/patches/runtime/art_method.cc
++++ b/patches/runtime/art_method.cc
+@@ -383,19 +398,51 @@ void ArtMethod::Invoke(Thread* self, uint32_t* args, uint32_t args_size, JValue*
+   Runtime* runtime = Runtime::Current();
+   // Call the invoke stub, passing everything as arguments.
+   // If the runtime is not yet started or it is required by the debugger, then perform the
+   // Invocation by the interpreter, explicitly forcing interpretation over JIT to prevent
+   // cycling around the various JIT/Interpreter methods that handle method invocation.
+ 
++  static constexpr uintptr_t kPFCutStaleQuickEntry = 0xfffffffffffffb17ULL;
++  const void* current_quick_entry = GetEntryPointFromQuickCompiledCode();
++  if (UNLIKELY(reinterpret_cast<uintptr_t>(current_quick_entry) == kPFCutStaleQuickEntry)) {
++    static thread_local int stale_quick_repair_count = 0;
++    if (stale_quick_repair_count < 80) {
++      stale_quick_repair_count++;
++      fprintf(stderr,
++              "[PFCUT] ArtMethod::Invoke stale quick repair native=%d %s\n",
++              IsNative() ? 1 : 0,
++              PrettyMethod().c_str());
++      fflush(stderr);
++    }
++    SetEntryPointFromQuickCompiledCode(IsNative()
++                                           ? GetQuickGenericJniStub()
++                                           : GetQuickToInterpreterBridge());
++  }
++  if (UNLIKELY(IsNative() &&
++               reinterpret_cast<uintptr_t>(GetEntryPointFromJni()) == kPFCutStaleQuickEntry)) {
++    SetEntryPointFromJniPtrSize(nullptr, kRuntimePointerSize);
++  }
++
+   // Force interpreter for ALL non-native Java methods.
+   // Without AOT compilation or JIT, there is no compiled code to execute.
+   // Entry points may contain Nterp stubs (just 'ret') or uninitialized values,
+   // causing SIGBUS when the invoke stub jumps to them.
+   bool force_interpreter_path = false;
+   if (!IsNative() && IsInvokable() && !IsProxyMethod()) {
+-    force_interpreter_path = true;
++    // WESTLAKE §601: only force the interpreter when there is genuinely NO compiled code.
++    // The blanket force-interpret above was a safety measure for the JIT-off configuration
++    // ("without AOT or JIT there is no compiled code to execute"). Once the JIT is live that
++    // premise is false: an entry point inside the JIT code cache IS real compiled code. Running
++    // it is exactly what Jit::CanInvokeCompiledCode already authorises, and force-interpreting
++    // it instead is what produced the infinite Execute<->ToCompiledCodeBridge recursion (SOE).
++    jit::Jit* wl_jit = runtime->GetJit();
++    const void* wl_ep = GetEntryPointFromQuickCompiledCode();
++    const bool wl_has_jit_code =
++        (wl_jit != nullptr && wl_jit->GetCodeCache() != nullptr && wl_ep != nullptr &&
++         wl_jit->GetCodeCache()->ContainsPc(wl_ep));
++    force_interpreter_path = !wl_has_jit_code;
+   }
+ 
+   if (UNLIKELY(!runtime->IsStarted() || force_interpreter_path ||
+                (self->IsForceInterpreter() && !IsNative() && !IsProxyMethod() && IsInvokable()))) {
+     if (IsStatic()) {
+       art::interpreter::EnterInterpreterFromInvoke(
+diff --git a/patches/runtime/class_linker.cc b/patches/runtime/class_linker.cc
+index a76baa3..7532d03 100644
+--- a/patches/runtime/class_linker.cc
++++ b/patches/runtime/class_linker.cc
+@@ -670,17 +912,51 @@ void ClassLinker::CheckSystemClass(Thread* self, Handle<mirror::Class> c1, const
+                  << " status=" << static_cast<int>(c2->GetStatus())
+                  << " numVTable=" << (c2->GetVTableDuringLinking() != nullptr ?
+                     c2->GetVTableDuringLinking()->GetLength() : -1)
+                  << " numMethods=" << c2->NumMethods()
+                  << " numSFields=" << c2->NumStaticFields()
+                  << " numIFields=" << c2->NumInstanceFields();
+-    // For String mismatch: replace class root with DEX-loaded version (c2)
++    // For String mismatch: replace class root with DEX-loaded version (c2).
++    // java.lang.Class is different: all mirror::Class objects allocated during
++    // early boot already use the preallocated Class root as their metaclass.
++    // Replacing that root creates two Class mirrors with the same descriptor and
++    // breaks verifier assignability checks.
+     if (strcmp(descriptor, "Ljava/lang/String;") == 0) {
+       SetClassRoot(ClassRoot::kJavaLangString, c2);
+       LOG(WARNING) << "  String root = c2 (" << static_cast<void*>(c2.Ptr())
+                    << ", " << c2->NumMethods() << " methods)";
++      // WESTLAKE §603h: repointing the class root is NOT enough -- the core array classes were bound
++      // to c1 back in InitWithoutImage (`object_array_string->SetComponentType(java_lang_String)`),
++      // and nothing else ever updates an array class's component_type_: LinkClass's retire path only
++      // calls FixupTemporaryDeclaringClass (fields'/methods' declaring class) and
++      // ClassTable::UpdateClass (the class table). c1 is left kRetired while String[] still points at
++      // it, so String.class != String[].getComponentType() and EVERY element-checked store into a
++      // String[] throws "java.lang.String cannot be stored in an array of type java.lang.String[]".
++      //
++      // That stayed invisible for as long as everything was interpreted, because the PFCUT
++      // System.arraycopy intrinsic skips the element check. A JIT-compiled caller reaches ART's real
++      // System.arraycopy, which performs it -- which is why enabling the JIT "broke rendering":
++      // androidsvg died in KXmlParser.parseStartTag and the sound-library row artwork vanished
++      // (§603e-§603g).
++      static const ClassRoot kArrayRootsToFix[] = {
++        ClassRoot::kJavaLangStringArrayClass,
++        ClassRoot::kObjectArrayClass,
++        ClassRoot::kClassArrayClass,
++      };
++      for (ClassRoot array_root : kArrayRootsToFix) {
++        ObjPtr<mirror::Class> arr = GetClassRoot(array_root, this);
++        if (arr != nullptr && arr->GetComponentType() == c1.Get()) {
++          arr->SetComponentType(c2);
++          LOG(WARNING) << "  [§603h] " << GetClassRootDescriptor(array_root)
++                       << " component retargeted " << static_cast<void*>(c1.Get())
++                       << " (retired) -> " << static_cast<void*>(c2.Ptr());
++        }
++      }
++    } else if (strcmp(descriptor, "Ljava/lang/Class;") == 0) {
++      LOG(WARNING) << "  Class root remains preallocated c1 ("
++                   << static_cast<void*>(c1.Get()) << ")";
+     }
+   }
+ }
+ 
+ ObjPtr<mirror::IfTable> AllocIfTable(Thread* self,
+                                      size_t ifcount,
+diff --git a/patches/runtime/interpreter/interpreter_common.cc b/patches/runtime/interpreter/interpreter_common.cc
+index aca1597..eff0c2c 100644
+--- a/patches/runtime/interpreter/interpreter_common.cc
++++ b/patches/runtime/interpreter/interpreter_common.cc
+@@ -112,36 +168,56 @@ bool ShouldStayInSwitchInterpreter(ArtMethod* method)
+   // Without AOT or JIT, there's no compiled code to call. The Nterp stub
+   // is just a 'ret' instruction, and entry points may be unset. Exiting
+   // to "compiled code" that doesn't exist causes SIGBUS crashes.
+   return true;
+ }
+ 
++// WESTLAKE §603f: the §436 guard, ported from the §551 binary code cave into source.
++//
++// A corrupt ArtMethod reaches the PFCUT predicates below with declaring_class_ holding small garbage
++// (observed: 5). The idiomatic `GetDeclaringClass() != nullptr` test PASSES for 5, and then
++// DescriptorEquals' inline load at class+0x40 faults at 0x45 -- the §436 launch lottery. §550 also
++// showed the ArtMethod pointer itself can be unaligned garbage, and that dropping the alignment test
++// merely changes the crash's shape, so BOTH checks are required.
++//
++// Use this in place of the bare null test on a method's declaring class everywhere in this file.
++// It returns false
++// for an implausible method or declaring class, which makes the predicate simply not match -- the
++// same outcome as a null declaring class, i.e. no behaviour change on healthy input.
++static inline bool PFCutDeclaringClassPlausible(ArtMethod* m)
++    REQUIRES_SHARED(Locks::mutator_lock_) {
++  if (m == nullptr) return false;
++  if ((reinterpret_cast<uintptr_t>(m) & 0x3u) != 0) return false;         // §550: keep the alignment test
++  const uintptr_t c = reinterpret_cast<uintptr_t>(m->GetDeclaringClass().Ptr());
++  return c >= 0x1000u && (c & 0x3u) == 0;                                 // §551: plausibility test
++}
++
+ static inline bool PFCutIsGsonNextNonWhitespace(ArtMethod* method)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
+   return method != nullptr &&
+-      method->GetDeclaringClass() != nullptr &&
++      PFCutDeclaringClassPlausible(method) &&
+       (method->GetDeclaringClass()->DescriptorEquals("Lcom/google/gson/stream/JsonReader;") ||
+        method->GetDeclaringClass()->DescriptorEquals(
+            "Lcom/newrelic/com/google/gson/stream/JsonReader;")) &&
+       strcmp(method->GetName(), "nextNonWhitespace") == 0;
+ }
+ 
+ static inline bool PFCutIsGsonJsonReaderMethod(ArtMethod* method, const char* name)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
+   return method != nullptr &&
+-      method->GetDeclaringClass() != nullptr &&
++      PFCutDeclaringClassPlausible(method) &&
+       (method->GetDeclaringClass()->DescriptorEquals("Lcom/google/gson/stream/JsonReader;") ||
+        method->GetDeclaringClass()->DescriptorEquals(
+            "Lcom/newrelic/com/google/gson/stream/JsonReader;")) &&
+       strcmp(method->GetName(), name) == 0;
+ }
+ 
+ static inline bool PFCutIsGsonLinkedTreeMapMethod(ArtMethod* method, const char* name)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
+   return method != nullptr &&
+-      method->GetDeclaringClass() != nullptr &&
++      PFCutDeclaringClassPlausible(method) &&
+       (method->GetDeclaringClass()->DescriptorEquals("Lcom/google/gson/internal/LinkedTreeMap;") ||
+        method->GetDeclaringClass()->DescriptorEquals(
+            "Lcom/newrelic/com/google/gson/internal/LinkedTreeMap;")) &&
+       strcmp(method->GetName(), name) == 0;
+ }
+ 
+@@ -5352,20 +9553,28 @@ void ArtInterpreterToCompiledCodeBridge(Thread* self,
+     }
+   }
+   jit::Jit* jit = Runtime::Current()->GetJit();
+   if (jit != nullptr && caller != nullptr) {
+     jit->NotifyInterpreterToCompiledCodeTransition(self, caller);
+   }
+-  if (!method->IsNative() && method->GetCodeItem() != nullptr) {
++  // WESTLAKE §601: do not force-interpret a method that HAS live JIT code -- that is the whole
++  // point of this bridge. Force-interpreting it re-entered Execute, which re-dispatched here,
++  // giving an infinite recursion that died as a StackOverflowError.
++  const void* wl_ep = method->GetEntryPointFromQuickCompiledCode();
++  const bool wl_has_jit_code =
++      (jit != nullptr && jit->GetCodeCache() != nullptr && wl_ep != nullptr &&
++       jit->GetCodeCache()->ContainsPc(wl_ep));
++  if (!wl_has_jit_code && !method->IsNative() && method->GetCodeItem() != nullptr) {
+     CodeItemDataAccessor accessor(method->DexInstructionData());
+     ArtInterpreterToInterpreterBridge(self, accessor, shadow_frame, result);
+     return;
+   }
+-  static constexpr uintptr_t kPFCutStaleQuickEntry = 0xfffffffffffffb17ULL;
+   const void* quick_entry = method->GetEntryPointFromQuickCompiledCode();
+-  if (UNLIKELY(reinterpret_cast<uintptr_t>(quick_entry) == kPFCutStaleQuickEntry)) {
++  if (UNLIKELY(PFCutPf625EntryLooksInvalid(quick_entry))) {
++    PFCutPf625LogUnsafeNativeEntry(
++        "compiled-bridge", method, caller, quick_entry, method->GetEntryPointFromJni());
+     if (method->IsNative()) {
+       method->SetEntryPointFromQuickCompiledCode(GetQuickGenericJniStub());
+     } else if (method->GetCodeItem() != nullptr) {
+       CodeItemDataAccessor accessor(method->DexInstructionData());
+       ArtInterpreterToInterpreterBridge(self, accessor, shadow_frame, result);
+       return;
+@@ -6976,13 +11260,13 @@ static inline bool DoCallCommon(ArtMethod* called_method,
+       fflush(stderr);
+     }
+     if (!EnsureInitialized(self, new_shadow_frame)) {
+       return false;
+     }
+     if (UNLIKELY(called_method->IsStatic() &&
+-                 called_method->GetDeclaringClass() != nullptr &&
++                 PFCutDeclaringClassPlausible(called_method) &&
+                  called_method->GetDeclaringClass()->DescriptorEquals("Ldalvik/system/VMStack;") &&
+                  strcmp(called_method->GetName(), "getStackClass2") == 0)) {
+       ShadowFrame* caller_frame = &shadow_frame;
+       for (int i = 0; i < 2 && caller_frame != nullptr; ++i) {
+         caller_frame = caller_frame->GetLink();
+       }
+@@ -7025,25 +11309,31 @@ static inline bool DoCallCommon(ArtMethod* called_method,
+     }
+ 
+     uint32_t* invoke_args = new_shadow_frame->GetVRegArgs(0);
+     uint32_t invoke_size = new_shadow_frame->NumberOfVRegs() * sizeof(uint32_t);
+     const char* invoke_shorty = called_method->GetInterfaceMethodIfProxy(
+         kRuntimePointerSize)->GetShorty();
+-    static constexpr uintptr_t kPFCutStaleNativeQuickEntry = 0xfffffffffffffb17ULL;
+     const void* quick_entry = called_method->GetEntryPointFromQuickCompiledCode();
+     const void* jni_entry = called_method->GetEntryPointFromJni();
+     const bool pfc_stale_native_entry =
+         pfc_had_stale_native_quick_entry ||
+-        reinterpret_cast<uintptr_t>(quick_entry) == kPFCutStaleNativeQuickEntry ||
+-        reinterpret_cast<uintptr_t>(jni_entry) == kPFCutStaleNativeQuickEntry;
++        PFCutPf625EntryLooksInvalid(quick_entry) ||
++        PFCutPf625EntryLooksInvalid(jni_entry);
+     bool pfc_force_interpreter_jni = false;
+     const char* pfc_force_interpreter_reason = nullptr;
+-    if (called_method->GetDeclaringClass() != nullptr) {
++    if (PFCutDeclaringClassPlausible(called_method)) {
+       std::string native_desc_storage;
+       const char* native_desc =
+           called_method->GetDeclaringClass()->GetDescriptor(&native_desc_storage);
++      // §319b PROVEN NECESSARY (do NOT remove): Unsafe MUST be forced onto the interpreter-JNI path.
++      // Un-forcing (letting the @FastNative quick path run) mismarshalls the `jlong offset` arg — the
++      // CAS then hits offset=0 (object header) instead of the real field, always fails, and spins
++      // (observed `CAS int offset=0 expected=16 new=-1 success=0` flood, broke init before
++      // bindApplication). The slow-but-correct interpreter-JNI path is required. The BouncyCastle
++      // slowness (see [[setsurface-sigbus-fixed-launch-spin-2026-07-23]]) must be fixed elsewhere
++      // (defer BC in AppSpawnXInit), NOT by touching this.
+       pfc_force_interpreter_jni =
+           native_desc != nullptr &&
+           (strcmp(native_desc, "Lsun/misc/Unsafe;") == 0 ||
+            strcmp(native_desc, "Ljdk/internal/misc/Unsafe;") == 0);
+       if (pfc_force_interpreter_jni) {
+         pfc_force_interpreter_reason = "Unsafe";
+@@ -7315,19 +11821,21 @@ bool DoCall(ArtMethod* called_method,
+       (is_range) ? inst->VRegA_3rc(inst_data) : inst->VRegA_35c(inst_data);
+ 
+   {
+     static thread_local int mcd_oncreate_trace = 0;
+     static thread_local bool trace_real_mcd_path = false;
+     ArtMethod* caller = shadow_frame.GetMethod();
+-    if (caller != nullptr && called_method != nullptr && mcd_oncreate_trace < 80000) {
++    const bool trace_mcd_calls = WestlakeTraceMcdCalls();
++    const int mcd_trace_limit = trace_mcd_calls ? 80000 : 200;
++    if (caller != nullptr && called_method != nullptr && mcd_oncreate_trace < mcd_trace_limit) {
+       std::string caller_desc_storage;
+       std::string called_desc_storage;
+-      const char* caller_desc = caller->GetDeclaringClass() != nullptr
++      const char* caller_desc = PFCutDeclaringClassPlausible(caller)
+           ? caller->GetDeclaringClass()->GetDescriptor(&caller_desc_storage)
+           : "";
+-      const char* called_desc = called_method->GetDeclaringClass() != nullptr
++      const char* called_desc = PFCutDeclaringClassPlausible(called_method)
+           ? called_method->GetDeclaringClass()->GetDescriptor(&called_desc_storage)
+           : "";
+       const bool is_mcd_frame =
+           (caller_desc != nullptr && strstr(caller_desc, "mcdonalds") != nullptr) ||
+           (called_desc != nullptr && strstr(called_desc, "mcdonalds") != nullptr);
+       const bool is_mcd_splash_lifecycle =
+@@ -7403,13 +11915,13 @@ bool DoCall(ArtMethod* called_method,
+     vregC = inst->VRegC_35c();
+     inst->GetVarArgs(arg, inst_data);
+   }
+ 
+   if (UNLIKELY(called_method != nullptr &&
+                called_method->IsNative() &&
+-               called_method->GetDeclaringClass() != nullptr &&
++               PFCutDeclaringClassPlausible(called_method) &&
+                called_method->GetDeclaringClass()->DescriptorEquals("Ljava/lang/Character;"))) {
+     auto get_arg = [&](uint32_t index) -> int32_t {
+       const uint32_t source_vreg = is_range ? vregC + index : arg[index];
+       return static_cast<int32_t>(shadow_frame.GetVReg(source_vreg));
+     };
+     const std::string_view method_name = called_method->GetNameView();
+diff --git a/patches/runtime/runtime.cc b/patches/runtime/runtime.cc
+index 773f968..6541953 100644
+--- a/patches/runtime/runtime.cc
++++ b/patches/runtime/runtime.cc
+@@ -4171,12 +4252,28 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
+ 
+   Thread::SetSensitiveThreadHook(runtime_options.GetOrDefault(Opt::HookIsSensitiveThread));
+   Monitor::Init(runtime_options.GetOrDefault(Opt::LockProfThreshold),
+                 runtime_options.GetOrDefault(Opt::StackDumpLockProfThreshold));
+ 
+   image_locations_ = runtime_options.ReleaseOrDefault(Opt::Image);
++  // WESTLAKE §602: appspawn-x's child passes no -Ximage, so allow WESTLAKE_BOOT_IMAGE=<path/boot.art>
++  // to supply one. Absent/empty -> unchanged (imageless), so this is inert unless explicitly set.
++  {
++    // §602b: OVERRIDE, do not merely fill in -- Opt::Image has a NON-EMPTY default, so the previous
++    // `if (image_locations_.empty())` guard never fired and the image was never loaded.
++    const char* wl_img = getenv("WESTLAKE_BOOT_IMAGE");
++    // §602d: print UNCONDITIONALLY to prove whether this code path executes at all.
++    fprintf(stderr, "[WESTLAKE-AOT] hook reached: env=%s locations=%zu\n",
++            wl_img ? wl_img : "(null)", image_locations_.size());
++    if (wl_img != nullptr && wl_img[0] != '\0') {
++      image_locations_.clear();
++      image_locations_.push_back(std::string(wl_img));
++      fprintf(stderr, "[WESTLAKE-AOT] using boot image: %s (overriding %zu default(s))\n",
++              wl_img, image_locations_.size());
++    }
++  }
+ 
+   SetInstructionSet(runtime_options.GetOrDefault(Opt::ImageInstructionSet));
+   boot_class_path_ = runtime_options.ReleaseOrDefault(Opt::BootClassPath);
+   boot_class_path_locations_ = runtime_options.ReleaseOrDefault(Opt::BootClassPathLocations);
+   DCHECK(boot_class_path_locations_.empty() ||
+          boot_class_path_locations_.size() == boot_class_path_.size());
+@@ -4223,14 +4320,24 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
+   is_eagerly_release_explicit_gc_disabled_ =
+       runtime_options.Exists(Opt::DisableEagerlyReleaseExplicitGC);
+   image_dex2oat_enabled_ = runtime_options.GetOrDefault(Opt::ImageDex2Oat);
+   dump_native_stack_on_sig_quit_ = runtime_options.GetOrDefault(Opt::DumpNativeStackOnSigQuit);
+   allow_in_memory_compilation_ = runtime_options.Exists(Opt::AllowInMemoryCompilation);
+ 
+-  if (is_zygote_ || runtime_options.Exists(Opt::OnlyUseTrustedOatFiles)) {
++  // WESTLAKE §603: appspawn-x MUST pass -Xzygote (otherwise Runtime::PreZygoteFork CHECK-aborts),
++  // which turns on the trusted-oat-files policy: OatFileManager::RegisterOatFile then CHECK-fails on
++  // any oat file outside ANDROID_ROOT ("Registering a non /system oat file"). Every artefact on this
++  // port lives in /data/local/tmp/asx (/system is read-only), so a boot image can never satisfy it
++  // and the runtime aborts the moment the image actually loads. The policy guards a production
++  // zygote against untrusted storage; that invariant does not exist here by construction.
++  if (getenv("WESTLAKE_TRUST_ALL_OAT") == nullptr &&
++      (is_zygote_ || runtime_options.Exists(Opt::OnlyUseTrustedOatFiles))) {
+     oat_file_manager_->SetOnlyUseTrustedOatFiles();
++  } else if (getenv("WESTLAKE_TRUST_ALL_OAT") != nullptr) {
++    fprintf(stderr, "[WESTLAKE-AOT] trusted-oat policy DISABLED (WESTLAKE_TRUST_ALL_OAT set)\n");
++    fflush(stderr);
+   }
+ 
+   vfprintf_ = runtime_options.GetOrDefault(Opt::HookVfprintf);
+   exit_ = runtime_options.GetOrDefault(Opt::HookExit);
+   abort_ = runtime_options.GetOrDefault(Opt::HookAbort);
+ 
+@@ -4475,13 +4582,17 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
+     InitPlatformSignalHandlers();
+   }
+ 
+   // Change the implicit checks flags based on runtime architecture.
+   switch (kRuntimeISA) {
+     case InstructionSet::kArm64:
+-      implicit_suspend_checks_ = true;
++      // WESTLAKE §601: this port never installs the implicit suspend-check page, so the compiler's
++      // implicit suspend check loads through an uninitialised register and faults at address 0 on
++      // EVERY loop back-edge (~7,200 SIGSEGV/s measured, each costing a musl sigchain + DFX handler
++      // round trip that unwinds the stack). Use explicit suspend checks instead.
++      implicit_suspend_checks_ = false;
+       FALLTHROUGH_INTENDED;
+     case InstructionSet::kArm:
+     case InstructionSet::kThumb2:
+     case InstructionSet::kRiscv64:
+     case InstructionSet::kX86:
+     case InstructionSet::kX86_64:
+diff --git a/patches/runtime/oat/image.cc b/patches/runtime/oat/image.cc
+index 2bfcf20..ee0098c 100644
+--- a/patches/runtime/oat/image.cc
++++ b/patches/runtime/oat/image.cc
+@@ -32,12 +32,26 @@
+ #include "mirror/object_array.h"
+ 
+ namespace art HIDDEN {
+ 
+ const uint8_t ImageHeader::kImageMagic[] = { 'a', 'r', 't', '\n' };
+ // Last change: Add intrinsics for Unsafe/JdkUnsafe.arrayBaseOffset.
++// §319b: reverted to 118 (the §318 space image is IMT-incompatible + gives no AOT benefit, so we
++// stay imageless; v118 guarantees no v114 image ever loads). The §318 recipe to go back to 114 is
++// in [[aot-bootimage-loads-imt-wall-2026-07-23]].
++// WESTLAKE §602: the prebuilt x86->arm64 dex2oat available here stamps image v114 (OAT v247, which
++// already matches). Accept v114 so its boot images load. §318 did this by hand-editing + relinking;
++// it is kept in source now that the tree builds.
++//
++// WESTLAKE §603c: REVERTED to the stock 118. §603b established that the v114 stamp came from the
++// *stale April* host dex2oat being the active one (build/bin/dex2oat), while a tree-matched build
++// (build/bin/dex2oat.jul22-rebuilt-GATED.bak) stamps 118 like this source does. Downgrading the
++// runtime to 114 made a mismatched producer's image *load* without making it *correct* — it aborted
++// at ClassLinker::CreateProxyConstructor with java.lang.reflect.Proxy having 0 direct methods.
++// Building the image with the tree-matched compiler makes producer and consumer agree by
++// construction, which is the fix; accepting a foreign version number never was.
+ const uint8_t ImageHeader::kImageVersion[] = { '1', '1', '8', '\0' };
+ 
+ ImageHeader::ImageHeader(uint32_t image_reservation_size,
+                          uint32_t component_count,
+                          uint32_t image_begin,
+                          uint32_t image_size,
+diff --git a/stubs/link_stubs.cc b/stubs/link_stubs.cc
+index b1908e5..6feaf23 100644
+--- a/stubs/link_stubs.cc
++++ b/stubs/link_stubs.cc
+@@ -730,6 +730,18 @@ extern "C" size_t artCriticalNativeOutArgsSize(void* method) {
+ }
+ 
+ // Stub for ArtMethod::IsProxyMethod
+ extern "C" bool _ZN3art9ArtMethod13IsProxyMethodEv() { return false; }
+ // Stub for ArtMethod::GetShorty — returns empty string (never actually called in our path)
+ extern "C" const char* _ZN3art9ArtMethod9GetShortyEv() { return ""; }
++
++// WESTLAKE §603d: the HOST dex2oat link needs this. patches/runtime/thread.cc references
++// art::interpreter::g_westlake_infl_gate (§212d), which is DEFINED in
++// patches/runtime/interpreter/interpreter_common.cc. The arm64 Makefile globs patches/**.cc so it
++// gets the definition; this host Makefile uses an explicit per-file patch list that includes the
++// patched thread.cc but NOT interpreter_common.cc, so the reference is unresolved. The host link
++// passes -Wl,--unresolved-symbols=ignore-all, so it only surfaced at RUN time as
++// "symbol lookup error: undefined symbol: _ZN3art11interpreter20g_westlake_infl_gateE".
++// Pulling in the full patched interpreter_common.cc here would drag the whole PFCUT layer into the
++// host compiler; the gate is only read by a diagnostic probe in Thread::SetException, so a false
++// definition is the correct host-side behaviour.
++namespace art { namespace interpreter { bool g_westlake_infl_gate = false; } }
+
+# ================================ PART B: aosp-art-15 ================================
+diff --git a/compiler/driver/compiler_options.h b/compiler/driver/compiler_options.h
+index 36ecf88..5118294 100644
+--- a/compiler/driver/compiler_options.h
++++ b/compiler/driver/compiler_options.h
+@@ -62,7 +62,14 @@ class CompilerOptions final {
+  public:
+   // Default values for parameters set via flags.
+   static constexpr bool kDefaultGenerateDebugInfo = false;
+-  static constexpr bool kDefaultGenerateMiniDebugInfo = true;
++  // WESTLAKE §603i: was `true`. With the JIT enabled, every compiled method adds a mini-debug-info
++  // ELF, and the periodic repack XZ-compresses them -- which eventually fails on this port and
++  // CHECK-aborts the app mid-use:
++  //     xz_utils.cc:90] Check failed: res == 0 (res=-1, 0=0)   [held: "JIT native debug entries"]
++  // Reproduced by walking noice's tab bar with the JIT on: SIGABRT after a few taps.
++  // Mini-debug-info exists only so a debugger/simpleperf can symbolize JIT frames; nothing on this
++  // port consumes it, so it is pure overhead plus a fatal failure mode. Off.
++  static constexpr bool kDefaultGenerateMiniDebugInfo = false;
+   static constexpr size_t kDefaultHugeMethodThreshold = 10000;
+   static constexpr size_t kDefaultInlineMaxCodeUnits = 32;
+   // Token to represent no value set for `inline_max_code_units_`.
+diff --git a/runtime/common_throws.cc b/runtime/common_throws.cc
+index b6338cf..05fed1f 100644
+--- a/runtime/common_throws.cc
++++ b/runtime/common_throws.cc
+@@ -146,8 +146,75 @@ void ThrowArrayIndexOutOfBoundsException(int index, int length) {
+ 
+ // ArrayStoreException
+ 
++// WESTLAKE §603g: identity dump for one Class, used by ASE-DIAG below. The question it answers is
++// whether a Class pointer is a GENUINE second class object (real meta-class, real loader, real dex)
++// or a CORRUPT field value that merely happens to be readable. Deliberately defensive: GetDexFile()
++// CHECK-fails on array/primitive/proxy classes and would crash on garbage, so it is only consulted
++// once the meta-class has been confirmed to be java.lang.Class.
++static void WlDumpClassIdentity(const char* tag, ObjPtr<mirror::Class> c)
++    REQUIRES_SHARED(Locks::mutator_lock_) {
++  if (c == nullptr) {
++    fprintf(stderr, "[WESTLAKE-ASE-DIAG]   %s: null\n", tag);
++    fflush(stderr);
++    return;
++  }
++  ObjPtr<mirror::Class> meta = c->GetClass();
++  std::string meta_desc = (meta != nullptr) ? mirror::Class::PrettyDescriptor(meta)
++                                            : std::string("<null>");
++  const bool meta_ok = (meta != nullptr && meta_desc == "java.lang.Class");
++  std::string dex_loc = "<skipped>";
++  if (meta_ok && !c->IsArrayClass() && !c->IsPrimitive() && !c->IsProxyClass()) {
++    dex_loc = c->GetDexFile().GetLocation();
++  }
++  fprintf(stderr,
++          "[WESTLAKE-ASE-DIAG]   %s: cls=%p meta=%p(%s) meta_ok=%d loader=%p status=%d "
++          "array=%d primitive=%d proxy=%d dex=%s\n",
++          tag, c.Ptr(), meta.Ptr(), meta_desc.c_str(), meta_ok ? 1 : 0,
++          c->GetClassLoader().Ptr(), static_cast<int>(c->GetStatus()),
++          c->IsArrayClass() ? 1 : 0, c->IsPrimitive() ? 1 : 0, c->IsProxyClass() ? 1 : 0,
++          dex_loc.c_str());
++  fflush(stderr);
++}
++
+ void ThrowArrayStoreException(ObjPtr<mirror::Class> element_class,
+                               ObjPtr<mirror::Class> array_class) {
++  // WESTLAKE §603f ASE-DIAG: with the JIT on, this port throws IMPOSSIBLE array-store exceptions
++  // ("java.lang.String cannot be stored in an array of type java.lang.String[]"), 3 per launch,
++  // never with the JIT off (§603e). Storing a String into a String[] is always legal, so the
++  // assignability test is answering wrongly. The decisive question is whether element_class and
++  // array_class->GetComponentType() are the SAME Class object: if the pointers differ while the
++  // descriptors match, there are DUPLICATE Class objects (class-loader / dex-cache identity) rather
++  // than a broken comparison. Dump both pointers plus the Java stack that names the store.
++  // Gated on WESTLAKE_ASE_DIAG and capped at 10, so normal runs are unaffected.
++  {
++    static const bool wl_ase_diag = (getenv("WESTLAKE_ASE_DIAG") != nullptr);
++    static int wl_ase_count = 0;
++    if (UNLIKELY(wl_ase_diag) && wl_ase_count < 10) {
++      wl_ase_count++;
++      ObjPtr<mirror::Class> comp =
++          (array_class != nullptr) ? array_class->GetComponentType() : nullptr;
++      fprintf(stderr,
++              "[WESTLAKE-ASE-DIAG] #%d element=%p (%s) array=%p (%s) component=%p (%s) "
++              "element_eq_component=%d\n",
++              wl_ase_count,
++              element_class.Ptr(), mirror::Class::PrettyDescriptor(element_class).c_str(),
++              array_class.Ptr(), mirror::Class::PrettyDescriptor(array_class).c_str(),
++              comp.Ptr(), mirror::Class::PrettyDescriptor(comp).c_str(),
++              (element_class.Ptr() == comp.Ptr()) ? 1 : 0);
++      fflush(stderr);
++      // §603g: is `component` a real second java.lang.String, or a corrupt field value?
++      WlDumpClassIdentity("element  ", element_class);
++      WlDumpClassIdentity("array    ", array_class);
++      WlDumpClassIdentity("component", comp);
++      Thread* self_ase = Thread::Current();
++      if (self_ase != nullptr) {
++        fprintf(stderr, "[WESTLAKE-ASE-DIAG] #%d Java stack:\n", wl_ase_count);
++        fflush(stderr);
++        self_ase->DumpJavaStack(std::cerr);
++        std::cerr.flush();
++      }
++    }
++  }
+   ThrowException("Ljava/lang/ArrayStoreException;", nullptr,
+                  StringPrintf("%s cannot be stored in an array of type %s",
+                               mirror::Class::PrettyDescriptor(element_class).c_str(),

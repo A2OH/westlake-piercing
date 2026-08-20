@@ -1,0 +1,63 @@
+--- patches/runtime/art_method.cc.pre601	2026-08-10 11:30:46.540471041 -0700
++++ patches/runtime/art_method.cc	2026-08-10 11:31:19.052583191 -0700
+@@ -428,7 +428,18 @@
+   // causing SIGBUS when the invoke stub jumps to them.
+   bool force_interpreter_path = false;
+   if (!IsNative() && IsInvokable() && !IsProxyMethod()) {
+-    force_interpreter_path = true;
++    // WESTLAKE §601: only force the interpreter when there is genuinely NO compiled code.
++    // The blanket force-interpret above was a safety measure for the JIT-off configuration
++    // ("without AOT or JIT there is no compiled code to execute"). Once the JIT is live that
++    // premise is false: an entry point inside the JIT code cache IS real compiled code. Running
++    // it is exactly what Jit::CanInvokeCompiledCode already authorises, and force-interpreting
++    // it instead is what produced the infinite Execute<->ToCompiledCodeBridge recursion (SOE).
++    jit::Jit* wl_jit = runtime->GetJit();
++    const void* wl_ep = GetEntryPointFromQuickCompiledCode();
++    const bool wl_has_jit_code =
++        (wl_jit != nullptr && wl_jit->GetCodeCache() != nullptr && wl_ep != nullptr &&
++         wl_jit->GetCodeCache()->ContainsPc(wl_ep));
++    force_interpreter_path = !wl_has_jit_code;
+   }
+ 
+   if (UNLIKELY(!runtime->IsStarted() || force_interpreter_path ||
+--- patches/runtime/interpreter/interpreter_common.cc.pre601	2026-08-10 11:30:46.544471058 -0700
++++ patches/runtime/interpreter/interpreter_common.cc	2026-08-10 11:31:30.492620313 -0700
+@@ -49,6 +49,7 @@
+ #include "intrinsics_enum.h"
+ #include "intrinsics_list.h"
+ #include "jit/jit.h"
++#include "jit/jit_code_cache.h"
+ #include "jni/jni_env_ext.h"
+ #include "jvalue-inl.h"
+ #include "method_handles-inl.h"
+@@ -9535,7 +9536,14 @@
+   if (jit != nullptr && caller != nullptr) {
+     jit->NotifyInterpreterToCompiledCodeTransition(self, caller);
+   }
+-  if (!method->IsNative() && method->GetCodeItem() != nullptr) {
++  // WESTLAKE §601: do not force-interpret a method that HAS live JIT code -- that is the whole
++  // point of this bridge. Force-interpreting it re-entered Execute, which re-dispatched here,
++  // giving an infinite recursion that died as a StackOverflowError.
++  const void* wl_ep = method->GetEntryPointFromQuickCompiledCode();
++  const bool wl_has_jit_code =
++      (jit != nullptr && jit->GetCodeCache() != nullptr && wl_ep != nullptr &&
++       jit->GetCodeCache()->ContainsPc(wl_ep));
++  if (!wl_has_jit_code && !method->IsNative() && method->GetCodeItem() != nullptr) {
+     CodeItemDataAccessor accessor(method->DexInstructionData());
+     ArtInterpreterToInterpreterBridge(self, accessor, shadow_frame, result);
+     return;
+--- patches/runtime/runtime.cc.pre601	2026-08-10 11:30:46.544471058 -0700
++++ patches/runtime/runtime.cc	2026-08-10 11:31:19.060583226 -0700
+@@ -4559,7 +4559,11 @@
+   // Change the implicit checks flags based on runtime architecture.
+   switch (kRuntimeISA) {
+     case InstructionSet::kArm64:
+-      implicit_suspend_checks_ = true;
++      // WESTLAKE §601: this port never installs the implicit suspend-check page, so the compiler's
++      // implicit suspend check loads through an uninitialised register and faults at address 0 on
++      // EVERY loop back-edge (~7,200 SIGSEGV/s measured, each costing a musl sigchain + DFX handler
++      // round trip that unwinds the stack). Use explicit suspend checks instead.
++      implicit_suspend_checks_ = false;
+       FALLTHROUGH_INTENDED;
+     case InstructionSet::kArm:
+     case InstructionSet::kThumb2:
