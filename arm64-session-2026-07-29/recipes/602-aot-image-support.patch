@@ -1,0 +1,39 @@
+--- patches/runtime/oat/image.cc.pre602	2026-08-10 14:00:00.638685246 -0700
++++ patches/runtime/oat/image.cc	2026-08-10 14:00:00.666685344 -0700
+@@ -38,7 +38,10 @@
+ // §319b: reverted to 118 (the §318 space image is IMT-incompatible + gives no AOT benefit, so we
+ // stay imageless; v118 guarantees no v114 image ever loads). The §318 recipe to go back to 114 is
+ // in [[aot-bootimage-loads-imt-wall-2026-07-23]].
+-const uint8_t ImageHeader::kImageVersion[] = { '1', '1', '8', '\0' };
++// WESTLAKE §602: the prebuilt x86->arm64 dex2oat available here stamps image v114 (OAT v247, which
++// already matches). Accept v114 so its boot images load. §318 did this by hand-editing + relinking;
++// it is kept in source now that the tree builds.
++const uint8_t ImageHeader::kImageVersion[] = { '1', '1', '4', '\0' };
+ 
+ ImageHeader::ImageHeader(uint32_t image_reservation_size,
+                          uint32_t component_count,
+--- patches/runtime/runtime.cc.pre602	2026-08-10 14:00:00.642685260 -0700
++++ patches/runtime/runtime.cc	2026-08-10 15:56:20.516954601 -0700
+@@ -4255,6 +4255,22 @@
+                 runtime_options.GetOrDefault(Opt::StackDumpLockProfThreshold));
+ 
+   image_locations_ = runtime_options.ReleaseOrDefault(Opt::Image);
++  // WESTLAKE §602: appspawn-x's child passes no -Ximage, so allow WESTLAKE_BOOT_IMAGE=<path/boot.art>
++  // to supply one. Absent/empty -> unchanged (imageless), so this is inert unless explicitly set.
++  {
++    // §602b: OVERRIDE, do not merely fill in -- Opt::Image has a NON-EMPTY default, so the previous
++    // `if (image_locations_.empty())` guard never fired and the image was never loaded.
++    const char* wl_img = getenv("WESTLAKE_BOOT_IMAGE");
++    // §602d: print UNCONDITIONALLY to prove whether this code path executes at all.
++    fprintf(stderr, "[WESTLAKE-AOT] hook reached: env=%s locations=%zu\n",
++            wl_img ? wl_img : "(null)", image_locations_.size());
++    if (wl_img != nullptr && wl_img[0] != '\0') {
++      image_locations_.clear();
++      image_locations_.push_back(std::string(wl_img));
++      fprintf(stderr, "[WESTLAKE-AOT] using boot image: %s (overriding %zu default(s))\n",
++              wl_img, image_locations_.size());
++    }
++  }
+ 
+   SetInstructionSet(runtime_options.GetOrDefault(Opt::ImageInstructionSet));
+   boot_class_path_ = runtime_options.ReleaseOrDefault(Opt::BootClassPath);
