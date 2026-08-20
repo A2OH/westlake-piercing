@@ -159,6 +159,10 @@ public class AppSchedulerBridge {
                      |  android.content.pm.ApplicationInfo.FLAG_ALLOW_CLEAR_USER_DATA
                      |  android.content.pm.ApplicationInfo.FLAG_HARDWARE_ACCELERATED;
             ai.targetSdkVersion = targetSdk > 0 ? targetSdk : 33;
+            // 2026-08-12 §611: apps read getApplicationInfo().metaData unconditionally
+            // (Material Catalog overrideApplicationComponent NPEs on null). An empty
+            // Bundle is the documented-sufficient fix (arm32 metaData recipe).
+            ai.metaData = new android.os.Bundle();
             // Custom Application class (Hilt/DI). noice declares NoiceApplication;
             // without className the default android.app.Application is used and DI
             // never inits → MainActivity NPEs. (General apps: parse from manifest.)
@@ -317,6 +321,23 @@ public class AppSchedulerBridge {
             }
             java.util.List<android.content.pm.ProviderInfo> realProviders =
                     buildProvidersFromManifest(bundleName, manifestJson);
+            // §611e: append the in-process settings provider (see WlSettingsProvider).
+            // Installed into the process-local provider map at bind, so every
+            // Settings/DeviceConfig read resolves locally instead of NPEing on the
+            // absent settings service.
+            try {
+                android.content.pm.ProviderInfo spi = new android.content.pm.ProviderInfo();
+                spi.name = "adapter.activity.WlSettingsProvider";
+                spi.packageName = bundleName;
+                spi.processName = appInfo.processName != null ? appInfo.processName : bundleName;
+                spi.authority = "settings";
+                spi.exported = false;
+                spi.enabled = true;
+                spi.applicationInfo = appInfo;
+                realProviders.add(spi);
+            } catch (Throwable t) {
+                System.err.println("[B43-BIND] settings provider append failed: " + t);
+            }
             setField(data, "providers", realProviders);
             System.err.println("[B43-BIND] providers populated: " + realProviders.size());
 
@@ -1574,9 +1595,28 @@ public class AppSchedulerBridge {
                     + " theme=0x" + Integer.toHexString(appThemeBefore));
             // Force-zero everything that PhoneWindow.setDefaultIcon /
             // initWindowDecorActionBar / loadIcon paths might dereference.
+            // 2026-08-13 §611: theme zeroing is skippable via ASX_KEEP_THEME=1. Zero theme
+            // means the DEFAULT framework theme, whose decor path inflates screen_toolbar →
+            // ActionBarContextView, which this port cannot inflate (Material Catalog died
+            // there). A real NoActionBar app theme (e.g. Theme.Catalog) avoids that decor
+            // entirely. Default behaviour (no env) is unchanged for the shipped noice path.
+            boolean keepTheme = "1".equals(System.getenv("ASX_KEEP_THEME"));
+            if (keepTheme) {
+                // §611b: this port's launch path applies activityInfo.theme directly (no
+                // getThemeResource() fallback to the app theme), so an unset activity theme
+                // means the DEFAULT framework theme — which is not an AppCompat descendant
+                // (AppCompatActivity throws) and whose decor drags in raster drawables.
+                // Default the activity theme to the app theme, like stock Android does.
+                if (activityInfo.theme == 0 && aiApp != null && aiApp.theme != 0) {
+                    activityInfo.theme = aiApp.theme;
+                }
+                System.err.println("[B47-SLA] ASX_KEEP_THEME=1: preserving theme 0x"
+                        + Integer.toHexString(activityInfo.theme) + "/0x"
+                        + Integer.toHexString(appThemeBefore));
+            }
             activityInfo.icon = 0;
             activityInfo.labelRes = 0;
-            activityInfo.theme = 0;
+            if (!keepTheme) activityInfo.theme = 0;
             activityInfo.logo = 0;
             activityInfo.banner = 0;
             if (aiApp != null) {
@@ -1584,7 +1624,7 @@ public class AppSchedulerBridge {
                 aiApp.iconRes = 0;
                 aiApp.labelRes = 0;
                 aiApp.descriptionRes = 0;
-                aiApp.theme = 0;
+                if (!keepTheme) aiApp.theme = 0;
                 aiApp.logo = 0;
                 aiApp.banner = 0;
                 aiApp.roundIconRes = 0;
