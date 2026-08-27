@@ -5,17 +5,24 @@
 # libnativehelper headers, my arm64 libart. COMPILE phase validates 6.1 header
 # compatibility (surfaces API drift = the porting work); LINK pulls board .so's.
 set -o pipefail
-OHSRC=/home/dspfac/ohos-6.1-src                       # sparse-synced 6.1 inner-API headers
-NDK=/home/dspfac/ohos-sdk-6.1/linux/native            # 6.1 SDK: clang15 + arm64 sysroot
+OHSRC=$WLROOT/ohos-6.1-src                       # sparse-synced 6.1 inner-API headers
+NDK=$WLROOT/ohos-sdk-6.1/linux/native            # 6.1 SDK: sysroot (musl libc) ONLY
 SYSROOT=$NDK/sysroot
-CXX=$NDK/llvm/bin/clang++
-AOSP=/home/dspfac/aosp-android-11                     # libnativehelper (jni.h, JniInvocation)
-ADAPTER=/home/dspfac/bridge-build/src/framework       # appspawn-x src + bionic_compat headers
-LIBARTDIR=/home/dspfac/art-universal-build/build-ohos-arm64/lib
+# WESTLAKE §649 (2026-08-15): build with the OHOS PREBUILT clang + libcxx-ohos, exactly like
+# build_bridge_arm64.sh. The SDK/NDK clang emits the `std::__n1` libc++ inline namespace, but the
+# board's OHOS libraries (and our libart/bridge) use `std::__h`, so linking produced
+#   ld.lld: error: undefined symbol: std::__n1::basic_string<...>::append(char const*, unsigned long)
+# and appspawn-x could not be rebuilt at all. Same fix, same reason, as the bridge.
+OHOS_LLVM=$WLROOT/openharmony/prebuilts/clang/ohos/linux-x86_64/llvm
+LIBCXX="-nostdinc++ -isystem $OHOS_LLVM/include/libcxx-ohos/include/c++/v1"
+CXX=$OHOS_LLVM/bin/clang++
+AOSP=$WLROOT/aosp-android-11                     # libnativehelper (jni.h, JniInvocation)
+ADAPTER=$WLROOT/bridge-build/src/framework       # appspawn-x src + bionic_compat headers
+LIBARTDIR=$WLROOT/art-universal-build/build-ohos-arm64/lib
 BC=$ADAPTER/appspawn-x/bionic_compat/include
-O=/home/dspfac/bridge-build-arm64/out; mkdir -p $O
-TMP=/home/dspfac/bridge-build-arm64/appspawnx_build; rm -rf $TMP; mkdir -p $TMP
-BOARD=5cdbf6af00000000000000000923012c
+O=$WLROOT/bridge-build-arm64/out; mkdir -p $O
+TMP=$WLROOT/bridge-build-arm64/appspawnx_build; rm -rf $TMP; mkdir -p $TMP
+BOARD="${BOARD:-$(${HDC:-hdc} list targets 2>/dev/null | head -1)}"   # target device; override with BOARD=<serial>
 
 INC="-I$ADAPTER/appspawn-x/src \
 -I$OHSRC/base/startup/appspawn/interfaces/innerkits/include \
@@ -37,7 +44,7 @@ INC="-I$ADAPTER/appspawn-x/src \
 -I$AOSP/libnativehelper/include_platform_header_only \
 -I$AOSP/libnativehelper/include_platform"
 
-CFLAGS="--target=aarch64-linux-ohos --sysroot=$SYSROOT \
+CFLAGS="--target=aarch64-linux-ohos --sysroot=$SYSROOT $LIBCXX \
 -fPIC -O2 -std=c++17 -D__OHOS__ -include signal.h \
 \
 -Wno-unused-parameter -Wno-missing-field-initializers -Wno-error -Wno-c99-designator"
@@ -59,9 +66,10 @@ echo "  compiled $ok/$((ok+fl))"
 [ $fl -gt 0 ] && { echo "COMPILE phase incomplete ($fl failed) — resolve before link"; exit 2; }
 
 echo "=== COMPILE clean — LINK appspawn-x (arm64) ==="
-NH=/home/dspfac/art-latest/build-ohos-arm64/nativehelper
-AB=/home/dspfac/art-latest/build-ohos-arm64/android-base
-BUILTINS=$NDK/llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/libclang_rt.builtins.a
+NH=$WLROOT/art-latest/build-ohos-arm64/nativehelper
+AB=$WLROOT/art-latest/build-ohos-arm64/android-base
+BUILTINS=$(ls $OHOS_LLVM/lib/clang/*/lib/aarch64-linux-ohos/libclang_rt.builtins.a 2>/dev/null | head -1)
+[ -n "$BUILTINS" ] || BUILTINS=$NDK/llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/libclang_rt.builtins.a
 LIBDIR=$O/board_libs   # 7 OHOS .so's pulled from board /system/lib64 (recv via Windows path)
 $CXX --target=aarch64-linux-ohos --sysroot=$SYSROOT -fuse-ld=lld \
   $TMP/*.o $NH/JniInvocation.o $NH/JNIHelp.o $NH/JniConstants.o $AB/liblog_symbols.o \

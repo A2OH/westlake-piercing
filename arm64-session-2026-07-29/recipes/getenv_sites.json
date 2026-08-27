@@ -1,0 +1,35 @@
+{
+ "Exception from call site #%u bootstrap method": [
+  10824828
+ ],
+ "WESTLAKE_NATIVE_LIB_DIR": [
+  10844904,
+  10976196
+ ],
+ "WESTLAKE_LIBRARY_PATH": [
+  10844928,
+  10976220
+ ],
+ "LD_LIBRARY_PATH": [
+  10844952,
+  10976244
+ ],
+ "WESTLAKE_NO_PROXYFIX": [
+  11048620,
+  11058528
+ ],
+ "WL_BADREF": [
+  11053616,
+  11063488
+ ],
+ "WESTLAKE_UNSAFE_JNI_DIAG": [
+  11199512
+ ],
+ "WESTLAKE_TRACE_INTERP_JNI": [
+  11204984
+ ],
+ "WESTLAKE_TRACE_TZ": [
+  11207632,
+  11212032
+ ]
+}
